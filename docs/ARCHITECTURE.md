@@ -4,8 +4,8 @@
 
 The repository is a small web application with a separately deployable
 frontend and API. PostgreSQL is the relational datastore. The current V1
-vertical slice provides first-account setup, private sessions, and activity
-tracking.
+provides first-account setup, private sessions, activity tracking and
+analytics, optional Telegram check-ins, and goals and projects.
 
 ```mermaid
 flowchart LR
@@ -13,6 +13,9 @@ flowchart LR
     Web -->|Same-origin checked, CSRF protected requests| API[FastAPI backend]
     API -->|User-scoped queries| DB[(PostgreSQL)]
     Migrations[Alembic migrations] -->|Schema changes| DB
+    Worker[Supervised Telegram worker] -->|Persistent delivery queue| DB
+    Worker -->|Bot API| Telegram[Telegram]
+    API -. optional configured extraction .-> AI[OpenAI-compatible provider]
 ```
 
 ## Components
@@ -31,12 +34,21 @@ flowchart LR
 - FastAPI application entry point: `backend/app/main.py`.
 - Authentication routes: `backend/app/api/auth.py`.
 - Activity and category routes: `backend/app/api/activities.py`.
+- Analytics aggregation routes: `backend/app/api/analytics.py`.
+- Goal routes: `backend/app/api/goals.py`.
+- Project and milestone routes: `backend/app/api/projects.py`.
+- Telegram settings and webhook routes: `backend/app/api/telegram_settings.py`
+  and `backend/app/api/telegram_webhook.py`.
 - Health routes: `backend/app/api/health.py`.
 - Settings: `backend/app/core/config.py`.
 - SQLAlchemy base and session setup: `backend/app/db/`.
 - Authentication dependencies resolve an opaque cookie session to a user.
-- Activity, category, subcategory, and summary operations filter by that user;
-  composite foreign keys also prevent cross-owner references.
+- Activity, category, subcategory, analytics, goal, project, and progress
+  operations filter by that user; composite foreign keys also prevent
+  cross-owner references, including activity-to-project associations.
+- Goal progress is user-entered or milestone-derived; it is not inferred from
+  activity records. Project progress is completed milestones divided by all
+  milestones, with no milestones yielding zero progress.
 
 ### Database and migrations
 
@@ -44,8 +56,9 @@ flowchart LR
   `docker-compose.yml`.
 - SQLAlchemy is the backend database toolkit and ORM.
 - Alembic reads the SQLAlchemy metadata from `backend/app/db/base.py`.
-- The initial migration creates users, sessions, the setup singleton,
-  categories, subcategories, and activities.
+- Alembic revisions create users, sessions, the setup singleton, categories,
+  subcategories, activities, Telegram integration records, goals, projects,
+  milestones, progress history, and activity-project associations.
 
 ## Runtime and health checks
 
@@ -80,7 +93,9 @@ flowchart LR
 
 See the repository `README.md` for PostgreSQL, backend, and frontend startup
 instructions. The frontend and backend can be run separately; Compose currently
-starts the database only.
+starts the database only. Telegram delivery runs in a separately supervised
+worker (`python -m app.telegram.worker`); it is not scheduled in web-server
+memory. Telegram and AI integrations require environment configuration.
 
 ## Architectural evolution
 

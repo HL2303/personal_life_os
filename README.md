@@ -1,7 +1,9 @@
 # Personal Life OS
 
-Personal Life OS is being built in phases. The current V1 slice includes a
-private single-user workspace and end-to-end activity tracking.
+Personal Life OS is a private personal workspace for tracking activities,
+reviewing time, and managing goals and projects. The current V1 includes
+account authentication, activity tracking, Analytics, Telegram check-ins, and
+Goals and Projects.
 
 ## Stack
 
@@ -50,10 +52,10 @@ The frontend is available at <http://localhost:3000>. The API health endpoints
 are `/health` (liveness) and `/health/ready` (database readiness); interactive
 API documentation is available at `/docs`.
 
-Alembic migrations create the initial account/session and user-owned activity
-schema. Apply migrations with `alembic upgrade head` from `backend/` after
-configuring the database URL. Open <http://localhost:3000> and create the first
-account; once created, public account setup is disabled.
+Alembic migrations create the account/session, activity, Telegram, goals, and
+projects schemas. Apply migrations with `alembic upgrade head` from
+`backend/` after configuring the database URL. Open <http://localhost:3000>
+and create the first account; once created, public account setup is disabled.
 
 ## Telegram check-ins
 
@@ -98,8 +100,10 @@ Configuration is loaded from untracked local environment files. The committed
 example files contain development-only settings and must not be used as
 production credentials. Passwords are Argon2id-hashed, session tokens are
 stored as hashes, browser sessions use HttpOnly/SameSite cookies, and
-state-changing requests require same-origin and CSRF validation. Activity,
-category, and subcategory queries are scoped to the authenticated account.
+state-changing requests require same-origin and CSRF validation. Activities,
+categories, subcategories, goals, projects, milestones, and progress history
+are scoped to the authenticated account; activity-to-project associations
+cannot cross account boundaries.
 
 Before any production use, configure a private PostgreSQL database and secret
 credentials, set `APP_ENV=production` and `SESSION_COOKIE_SECURE=true`, serve

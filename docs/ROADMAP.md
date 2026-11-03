@@ -2,9 +2,8 @@
 
 ## Roadmap status
 
-This roadmap separates completed repository foundation work from product phases
-that still need product-owner confirmation. Future phases are sequencing
-proposals, not approved feature commitments.
+This roadmap records the implemented foundation and V1 modules. Any work beyond
+the listed capabilities remains subject to product-owner confirmation.
 
 ## Phase 0 - Technical foundation (complete)
 
@@ -37,19 +36,34 @@ small, testable first product capability.
   references in the database.
 
 **Exit state:** the workflow and authorization boundaries pass automated tests,
-and the migration plus CRUD flow have been verified against an isolated
-PostgreSQL scratch database.
+and the migration plus CRUD flow pass automated tests. The latest migration
+upgrade/downgrade lifecycle has been checked on SQLite; PostgreSQL integration
+verification remains outstanding.
 
-## Phase 3 - Validate and refine (proposed)
+## Phase 3 - Telegram and Analytics (implemented)
 
-- Validate the workflow with intended users.
-- Improve usability and reliability based on observed evidence.
-- Add only the next highest-value capability supported by product feedback.
+- Add optional Telegram account linking, protected webhook processing,
+  configurable scheduled check-ins, and queued delivery through a separately
+  supervised worker.
+- Add user-scoped daily, weekly, monthly, and custom-range analytics using
+  persisted activities, with untracked time distinguished from tracked time.
 
-**Exit state:** the product direction and next investment are based on agreed
-success measures and user feedback.
+## Phase 4 - Goals and Projects (implemented)
 
-## Deferred until explicitly approved
+- Add measurable, recurring, and milestone-based goals, manually maintained
+  progress history, projects, project milestones, and optional activity-project
+  associations.
+- Enforce account ownership across records and references.
 
-Telegram, AI features, collaboration, analytics, billing, and production
-deployment remain deferred. Their priority and requirements remain open.
+## Next - Validate and refine (proposed)
+
+- Validate the current workflows with intended users and agree on success
+  measures.
+- Verify migrations and application workflows against PostgreSQL in an
+  integration environment.
+- Address deployment, recovery, and operational requirements before public
+  production use.
+
+Public deployment, collaboration, billing, and AI recommendations remain
+deferred. Optional Telegram activity extraction is implemented but requires
+explicit provider configuration.

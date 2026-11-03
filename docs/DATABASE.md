@@ -3,8 +3,8 @@
 ## Current status
 
 PostgreSQL 16 is configured as the relational database. SQLAlchemy and Alembic
-manage the initial account/session and activity-tracking schema in
-`20261103_0001_activity_tracking.py`.
+manage the account/session, activity, Telegram, goals, and projects schema in
+the revisions under `backend/alembic/versions/`.
 
 ## Local database
 
@@ -47,6 +47,22 @@ postgresql+psycopg://personal_life_os:local-dev-only@localhost:5432/personal_lif
 - Categories, subcategories, and activities carry `user_id`.
 - Composite foreign keys require category/subcategory references to belong to
   the same user as the activity.
+- `goals` and `projects` are user-owned and may reference only categories
+  belonging to their owner. Goal milestones and progress history carry the
+  same owner and use composite foreign keys to their parent goal.
+- `project_milestones` are user-owned and reference a project using a
+  composite project/owner foreign key. Activities may optionally reference a
+  project through a composite project/owner foreign key; deleting a project
+  detaches its activities rather than deleting them.
+- Measurable and recurring goal values are constrained to valid non-negative
+  progress not exceeding a positive target. Milestone goals use milestone
+  completion instead of numeric values. Recurring progress resets by calendar
+  week or month when read or updated; updates are retained in goal progress
+  history.
+- Project and goal progress history is persisted for audit/display. Goal
+  milestone completion changes are recorded as percentage progress entries.
+  Project progress is calculated from completed milestones divided by all
+  milestones (zero when there are none).
 - The application derives ownership from the authenticated session and
   filters reads, updates, and deletes by that user.
 - Telegram linking tokens are stored hashed and expire after a short interval;
@@ -56,6 +72,8 @@ postgresql+psycopg://personal_life_os:local-dev-only@localhost:5432/personal_lif
   clarification state to support processing/retries. Configure an AI provider
   only after reviewing its data-handling terms; message text and category
   context are sent to the configured provider for extraction.
+- Telegram check-in delivery and retry state is persisted in PostgreSQL for a
+  separately supervised worker; do not rely on an in-memory scheduler.
 
 When adding more personal records:
 

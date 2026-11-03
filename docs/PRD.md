@@ -50,25 +50,36 @@ release.
 
 ## 5. Current V1 workflow
 
-The current implementation provides a private, single-user activity log:
+The current implementation provides a private workspace with one-time account
+setup; public registration is disabled after the first account is created.
+The implemented workflows are:
 
-1. The first user creates an account through one-time setup; public registration
-   is disabled afterward.
-2. The user can sign in and manage activities, categories, and subcategories.
-3. Activities can be logged retrospectively and reviewed on a daily timeline
-   with date navigation and duration/category summaries.
-4. Protected data is scoped to the authenticated user.
+- Manage activities, categories, and subcategories; log activities
+  retrospectively and review them on a daily timeline.
+- Review recorded time through daily, weekly, monthly, and custom-range
+  analytics, category summaries, and activity drill-down. Missing periods
+  remain explicitly untracked.
+- Link an optional Telegram bot for scheduled check-ins and activity capture.
+  AI extraction is optional and requires provider configuration; uncertain
+  activity details are clarified rather than invented.
+- Create measurable, recurring, and milestone-based goals with manually
+  recorded progress and history.
+- Manage projects, milestones, and project-linked activities. Project progress
+  is based on completed milestones divided by all milestones.
 
-This records the implemented V1 slice; broader product direction and success
-criteria remain to be validated.
+All protected records and cross-record references are scoped to the
+authenticated account. This describes the current implementation; the target
+users, success criteria, and broader product direction still need validation.
 
 ## 6. Current non-goals
 
-- Telegram, AI recommendations, and other external integrations.
 - Social, shared, or collaborative accounts.
-- Production deployment, billing, or analytics.
+- AI recommendations or automated inference of goal progress from activity.
+- Billing and public production deployment.
 
-These may be considered later, but none is implied by the Phase 0 foundation.
+Basic activity analytics and optional Telegram check-ins are implemented.
+These do not imply that advanced analytics, recommendations, collaboration,
+or production deployment are approved.
 
 ## 7. Privacy and security expectations
 

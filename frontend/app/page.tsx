@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 
 import {
   Activity,
@@ -15,7 +16,6 @@ import {
   deleteActivity,
   deleteCategory,
   deleteSubcategory,
-  getAuthSession,
   getActivities,
   getActivitySummary,
   getCategories,
@@ -33,6 +33,7 @@ import {
   updateCategory,
   updateSubcategory,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import styles from "./page.module.css";
 
 type ActivityDraft = {
@@ -160,6 +161,7 @@ function toActivityInput(draft: ActivityDraft): ActivityInput {
 }
 
 export default function Home() {
+  const auth = useAuth();
   const [selectedDate, setSelectedDate] = useState("");
   const [categories, setCategories] = useState<Category[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -181,10 +183,8 @@ export default function Home() {
   const [editingSubcategoryId, setEditingSubcategoryId] = useState<number | null>(null);
   const [editingSubcategoryName, setEditingSubcategoryName] = useState("");
   const [refresh, setRefresh] = useState(0);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [authenticated, setAuthenticated] = useState(false);
-  const [username, setUsername] = useState("");
   const [setupRequired, setSetupRequired] = useState(true);
+  const [setupStatusLoading, setSetupStatusLoading] = useState(true);
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
@@ -201,41 +201,23 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
-    const resolveSignedOutState = async () => {
-      try {
-        const status = await getSetupStatus();
+    if (auth.status !== "unauthenticated") return;
+    getSetupStatus()
+      .then((status) => {
         if (active) setSetupRequired(status.setup_required);
-      } catch (cause) {
-        if (active) {
-          setAuthError(
-            cause instanceof Error ? cause.message : "Could not connect to the authentication service.",
-          );
-        }
-      } finally {
-        if (active) setAuthLoading(false);
-      }
-    };
-    const onUnauthorized = () => {
-      setAuthenticated(false);
-      setUsername("");
-      setAuthPassword("");
-      setAuthError("Your session expired. Sign in again to continue.");
-      void resolveSignedOutState();
-    };
-    window.addEventListener("personal-life-os:unauthorized", onUnauthorized);
-    getAuthSession()
-      .then((session) => {
-        if (!active) return;
-        setUsername(session.username);
-        setAuthenticated(true);
-        setAuthError("");
       })
-      .catch(() => resolveSignedOutState());
+      .catch((cause: unknown) => {
+        if (active) {
+          setAuthError(cause instanceof Error ? cause.message : "Could not connect to the authentication service.");
+        }
+      })
+      .finally(() => {
+        if (active) setSetupStatusLoading(false);
+      });
     return () => {
       active = false;
-      window.removeEventListener("personal-life-os:unauthorized", onUnauthorized);
     };
-  }, []);
+  }, [auth.status]);
 
   const loadCategories = useCallback(async () => {
     const result = await getCategories();
@@ -243,7 +225,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!authenticated) return;
+    if (auth.status !== "authenticated") return;
     let active = true;
     Promise.all([getCategories(), getProjects(true), getGoals()])
       .then(([categoryResult, projectResult, goalResult]) => {
@@ -258,10 +240,10 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [authenticated]);
+  }, [auth.status]);
 
   useEffect(() => {
-    if (!authenticated || !selectedDate) return;
+    if (auth.status !== "authenticated" || !selectedDate) return;
     let active = true;
     const range = localDayRange(selectedDate);
     setLoading(true);
@@ -285,7 +267,7 @@ export default function Home() {
     return () => {
       active = false;
     };
-  }, [authenticated, selectedDate, refresh]);
+  }, [auth.status, selectedDate, refresh]);
 
   const selectedCategory = useMemo(
     () => categories.find((category) => String(category.id) === draft.category_id),
@@ -433,9 +415,9 @@ export default function Home() {
       const session = setupRequired
         ? await setupAccount({ username: authUsername, password: authPassword })
         : await login({ username: authUsername, password: authPassword });
-      setUsername(session.username);
-      setAuthenticated(true);
+      auth.setAuthenticated(session.username);
       setSetupRequired(false);
+      setSetupStatusLoading(false);
       setAuthPassword("");
     } catch (cause) {
       setAuthError(cause instanceof Error ? cause.message : "Could not authenticate.");
@@ -446,20 +428,15 @@ export default function Home() {
 
   async function signOut() {
     setAuthError("");
+    let signOutError = "";
     try {
       await logout();
     } catch (cause) {
-      setAuthError(cause instanceof Error ? cause.message : "Could not sign out.");
+      signOutError = cause instanceof Error ? cause.message : "Could not sign out.";
     }
-    setAuthenticated(false);
-    setUsername("");
+    auth.clearSession(signOutError);
     setAuthPassword("");
-    try {
-      const status = await getSetupStatus();
-      setSetupRequired(status.setup_required);
-    } catch {
-      setAuthError("Could not reach the authentication service.");
-    }
+    setSetupStatusLoading(true);
   }
 
   async function openTelegramSettings() {
@@ -524,7 +501,7 @@ export default function Home() {
   const todayKey = selectedDate ? localDateKey(new Date()) : "";
   const categoryMax = Math.max(1, summary?.total_duration_seconds ?? 0);
 
-  if (authLoading) {
+  if (auth.status === "checking" || (auth.status === "unauthenticated" && setupStatusLoading)) {
     return (
       <main className={styles.authScreen}>
         <div className={styles.authCard}>Checking your secure session…</div>
@@ -532,14 +509,14 @@ export default function Home() {
     );
   }
 
-  if (!authenticated) {
+  if (auth.status !== "authenticated") {
     return (
       <main className={styles.authScreen}>
         <section className={styles.authCard}>
-          <a className={styles.brand} href="/" aria-label="Personal Life OS home">
+          <Link className={styles.brand} href="/" aria-label="Personal Life OS home">
             <span className={styles.brandMark}>p</span>
             <span>personal<span className={styles.brandLight}>life</span></span>
-          </a>
+          </Link>
           <p className={styles.eyebrow}>{setupRequired ? "PRIVATE BY DESIGN" : "WELCOME BACK"}</p>
           <h1>{setupRequired ? "Create your private workspace" : "Sign in to your space"}</h1>
           <p className={styles.authDescription}>
@@ -547,7 +524,7 @@ export default function Home() {
               ? "Set up the first and only account. Public registration is disabled after setup."
               : "Your activity log is private. Sign in to pick up where you left off."}
           </p>
-          {authError && <div className={styles.dialogError} role="alert">{authError}</div>}
+          {(authError || auth.error) && <div className={styles.dialogError} role="alert">{authError || auth.error}</div>}
           <form className={styles.activityForm} onSubmit={submitAuthentication}>
             <label className={styles.field}>
               <span>Username</span>
@@ -586,26 +563,26 @@ export default function Home() {
   return (
     <main className={styles.app}>
       <aside className={styles.sidebar}>
-        <a className={styles.brand} href="/" aria-label="Personal Life OS home">
+        <Link className={styles.brand} href="/" aria-label="Personal Life OS home">
           <span className={styles.brandMark}>p</span>
           <span>personal<span className={styles.brandLight}>life</span></span>
-        </a>
+        </Link>
         <div className={styles.sideLabel}>YOUR SPACE</div>
-        <a className={`${styles.navItem} ${styles.navActive}`} href="/">
+        <Link className={`${styles.navItem} ${styles.navActive}`} href="/">
           <span className={styles.navIcon}>◷</span> Activity
-        </a>
-        <a className={styles.navItem} href="/analytics">
+        </Link>
+        <Link className={styles.navItem} href="/analytics">
           <span className={styles.navIcon}>▥</span> Analytics
-        </a>
-        <a className={styles.navItem} href="/goals">
+        </Link>
+        <Link className={styles.navItem} href="/goals">
           <span className={styles.navIcon}>◎</span> Goals
-        </a>
-        <a className={styles.navItem} href="/projects">
+        </Link>
+        <Link className={styles.navItem} href="/projects">
           <span className={styles.navIcon}>▣</span> Projects
-        </a>
+        </Link>
         <div className={styles.sidebarFoot}>
           <span className={styles.avatar}>P</span>
-          <span className={styles.accountName}><strong>{username}</strong><small>Personal space</small></span>
+          <span className={styles.accountName}><strong>{auth.username}</strong><small>Personal space</small></span>
           <button className={styles.logoutButton} onClick={signOut}>Sign out</button>
         </div>
       </aside>
@@ -614,7 +591,7 @@ export default function Home() {
         <header className={styles.topbar}>
           <span className={styles.breadcrumb}>My space <span>/</span> Activity</span>
           <div className={styles.topbarActions}>
-            <a className={styles.manageButton} href="/analytics">Analytics</a>
+            <Link className={styles.manageButton} href="/analytics">Analytics</Link>
             <button className={styles.manageButton} onClick={openTelegramSettings}>
               <span aria-hidden="true">✉</span> Telegram
             </button>
@@ -633,10 +610,10 @@ export default function Home() {
             </div>
 
             <section className={styles.focusSummary}>
-              <a href="/goals"><span>ACTIVE GOALS</span><strong>{focusGoals.filter((goal) => goal.status === "active").length}</strong></a>
-              <a href="/goals"><span>OVERDUE GOALS</span><strong className={focusGoals.some((goal) => goal.overdue) ? styles.overdueText : ""}>{focusGoals.filter((goal) => goal.overdue).length}</strong></a>
-              <a href="/goals"><span>UPCOMING DEADLINES</span><strong>{focusGoals.filter((goal) => goal.status === "active" && !goal.overdue && new Date(`${goal.deadline}T12:00:00`).getTime() - Date.now() <= 7 * 86400000).length}</strong></a>
-              <a href="/projects"><span>ACTIVE PROJECTS</span><strong>{projects.filter((project) => project.status === "active").length}</strong></a>
+              <Link href="/goals"><span>ACTIVE GOALS</span><strong>{focusGoals.filter((goal) => goal.status === "active").length}</strong></Link>
+              <Link href="/goals"><span>OVERDUE GOALS</span><strong className={focusGoals.some((goal) => goal.overdue) ? styles.overdueText : ""}>{focusGoals.filter((goal) => goal.overdue).length}</strong></Link>
+              <Link href="/goals"><span>UPCOMING DEADLINES</span><strong>{focusGoals.filter((goal) => goal.status === "active" && !goal.overdue && new Date(`${goal.deadline}T12:00:00`).getTime() - Date.now() <= 7 * 86400000).length}</strong></Link>
+              <Link href="/projects"><span>ACTIVE PROJECTS</span><strong>{projects.filter((project) => project.status === "active").length}</strong></Link>
             </section>
             <button className={styles.primaryButton} onClick={openCreateEditor}>
               <span aria-hidden="true">＋</span> Log activity

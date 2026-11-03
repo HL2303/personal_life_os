@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import {
   Activity,
@@ -8,9 +10,9 @@ import {
   AnalyticsCategory,
   getActivities,
   getAnalytics,
-  getAuthSession,
   logout,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import styles from "../page.module.css";
 
 type PeriodMode = "day" | "week" | "month" | "custom";
@@ -267,9 +269,8 @@ function AnalyticsCharts({ analytics }: { analytics: Analytics }) {
 }
 
 export default function AnalyticsPage() {
-  const [username, setUsername] = useState("");
-  const [authenticated, setAuthenticated] = useState(false);
-  const [authLoading, setAuthLoading] = useState(true);
+  const auth = useAuth();
+  const router = useRouter();
   const [mode, setMode] = useState<PeriodMode>("week");
   const [anchor, setAnchor] = useState("");
   const [customStart, setCustomStart] = useState("");
@@ -288,23 +289,8 @@ export default function AnalyticsPage() {
   }, []);
 
   useEffect(() => {
-    let active = true;
-    getAuthSession()
-      .then((session) => {
-        if (!active) return;
-        setUsername(session.username);
-        setAuthenticated(true);
-      })
-      .catch(() => {
-        if (active) window.location.assign("/");
-      })
-      .finally(() => {
-        if (active) setAuthLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
+    if (auth.status === "unauthenticated") router.replace("/");
+  }, [auth.status, router]);
 
   const range = useMemo(
     () => getRange(mode, anchor, customStart, customEnd),
@@ -316,7 +302,7 @@ export default function AnalyticsPage() {
   );
 
   useEffect(() => {
-    if (!authenticated) return;
+    if (auth.status !== "authenticated") return;
     if (!range.start || !range.end || range.end < range.start) {
       setAnalytics(null);
       setLoading(false);
@@ -339,7 +325,7 @@ export default function AnalyticsPage() {
     return () => {
       active = false;
     };
-  }, [authenticated, range.start, range.end, timezone]);
+  }, [auth.status, range.start, range.end, timezone]);
 
   useEffect(() => {
     if (!selectedCategory || !range.start || !range.end || range.end < range.start) {
@@ -366,11 +352,14 @@ export default function AnalyticsPage() {
   }, [selectedCategory, range.start, range.end]);
 
   async function signOut() {
+    let signOutError = "";
     try {
       await logout();
-    } finally {
-      window.location.assign("/");
+    } catch (cause) {
+      signOutError = cause instanceof Error ? cause.message : "Could not sign out.";
     }
+    auth.clearSession(signOutError);
+    router.replace("/");
   }
 
   const rangeLabel = range.start && range.end
@@ -385,33 +374,33 @@ export default function AnalyticsPage() {
     ? compare(analytics.activity_count, analytics.previous_period.activity_count)
     : "";
 
-  if (authLoading || !authenticated) {
-    return <main className={styles.loadingState}>{authLoading ? "Checking your session…" : "Redirecting…"}</main>;
+  if (auth.status !== "authenticated") {
+    return <main className={styles.loadingState}>{auth.status === "checking" ? "Checking your secure session…" : "Redirecting…"}</main>;
   }
 
   return (
     <main className={styles.app}>
       <aside className={styles.sidebar}>
-        <a className={styles.brand} href="/" aria-label="Personal Life OS home">
+        <Link className={styles.brand} href="/" aria-label="Personal Life OS home">
           <span className={styles.brandMark}>p</span>
           <span>personal<span className={styles.brandLight}>life</span></span>
-        </a>
+        </Link>
         <div className={styles.sideLabel}>YOUR SPACE</div>
-        <a className={styles.navItem} href="/">
+        <Link className={styles.navItem} href="/">
           <span className={styles.navIcon}>◷</span> Activity
-        </a>
-        <a className={`${styles.navItem} ${styles.navActive}`} href="/analytics" aria-current="page">
+        </Link>
+        <Link className={`${styles.navItem} ${styles.navActive}`} href="/analytics" aria-current="page">
           <span className={styles.navIcon}>▥</span> Analytics
-        </a>
-        <a className={styles.navItem} href="/goals">
+        </Link>
+        <Link className={styles.navItem} href="/goals">
           <span className={styles.navIcon}>◎</span> Goals
-        </a>
-        <a className={styles.navItem} href="/projects">
+        </Link>
+        <Link className={styles.navItem} href="/projects">
           <span className={styles.navIcon}>▣</span> Projects
-        </a>
+        </Link>
         <div className={styles.sidebarFoot}>
           <span className={styles.avatar}>P</span>
-          <span className={styles.accountName}><strong>{username}</strong><small>Personal space</small></span>
+          <span className={styles.accountName}><strong>{auth.username}</strong><small>Personal space</small></span>
           <button className={styles.logoutButton} onClick={signOut}>Sign out</button>
         </div>
       </aside>
@@ -420,7 +409,7 @@ export default function AnalyticsPage() {
         <header className={styles.topbar}>
           <span className={styles.breadcrumb}>My space <span>/</span> Analytics</span>
           <div className={styles.topbarActions}>
-            <a className={styles.manageButton} href="/">Activity log</a>
+            <Link className={styles.manageButton} href="/">Activity log</Link>
           </div>
         </header>
         <div className={styles.content}>

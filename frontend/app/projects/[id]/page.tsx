@@ -1,17 +1,19 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 
 import {
   ProjectDetail,
   createProjectMilestone,
   deleteProjectMilestone,
-  getAuthSession,
   getProject,
   logout,
   updateProjectMilestone,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import styles from "../../page.module.css";
 
 function formatDate(value: string) {
@@ -38,8 +40,8 @@ function duration(seconds: number) {
 export default function ProjectDetailPage() {
   const params = useParams<{ id: string }>();
   const projectId = Number(params.id);
-  const [username, setUsername] = useState("");
-  const [authenticated, setAuthenticated] = useState(false);
+  const auth = useAuth();
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [error, setError] = useState("");
@@ -58,19 +60,16 @@ export default function ProjectDetailPage() {
   }
 
   useEffect(() => {
-    getAuthSession()
-      .then((session) => {
-        setUsername(session.username);
-        setAuthenticated(true);
-      })
-      .catch(() => window.location.assign("/"));
-  }, []);
+    if (auth.status === "unauthenticated") router.replace("/");
+  }, [auth.status, router]);
 
   useEffect(() => {
-    if (authenticated && Number.isInteger(projectId) && projectId > 0) void loadProject();
+    if (auth.status === "authenticated" && Number.isInteger(projectId) && projectId > 0) {
+      void loadProject();
+    }
   // loadProject is scoped to the current route id.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authenticated, projectId]);
+  }, [auth.status, projectId]);
 
   async function addMilestone(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -109,33 +108,36 @@ export default function ProjectDetailPage() {
   }
 
   async function signOut() {
+    let signOutError = "";
     try {
       await logout();
-    } finally {
-      window.location.assign("/");
+    } catch (cause) {
+      signOutError = cause instanceof Error ? cause.message : "Could not sign out.";
     }
+    auth.clearSession(signOutError);
+    router.replace("/");
   }
 
-  if (!authenticated || loading) {
-    return <main className={styles.loadingState}>{loading ? "Loading project…" : "Checking your session…"}</main>;
+  if (auth.status !== "authenticated" || loading) {
+    return <main className={styles.loadingState}>{auth.status === "checking" ? "Checking your secure session…" : auth.status === "unauthenticated" ? "Redirecting…" : "Loading project…"}</main>;
   }
 
   return (
     <main className={styles.app}>
       <aside className={styles.sidebar}>
-        <a className={styles.brand} href="/" aria-label="Personal Life OS home"><span className={styles.brandMark}>p</span><span>personal<span className={styles.brandLight}>life</span></span></a>
+        <Link className={styles.brand} href="/" aria-label="Personal Life OS home"><span className={styles.brandMark}>p</span><span>personal<span className={styles.brandLight}>life</span></span></Link>
         <div className={styles.sideLabel}>YOUR SPACE</div>
-        <a className={styles.navItem} href="/">◷ Activity</a>
-        <a className={styles.navItem} href="/analytics">▥ Analytics</a>
-        <a className={styles.navItem} href="/goals">◎ Goals</a>
-        <a className={`${styles.navItem} ${styles.navActive}`} href="/projects">▣ Projects</a>
-        <div className={styles.sidebarFoot}><span className={styles.avatar}>P</span><span className={styles.accountName}><strong>{username}</strong><small>Personal space</small></span><button className={styles.logoutButton} onClick={signOut}>Sign out</button></div>
+        <Link className={styles.navItem} href="/">◷ Activity</Link>
+        <Link className={styles.navItem} href="/analytics">▥ Analytics</Link>
+        <Link className={styles.navItem} href="/goals">◎ Goals</Link>
+        <Link className={`${styles.navItem} ${styles.navActive}`} href="/projects">▣ Projects</Link>
+        <div className={styles.sidebarFoot}><span className={styles.avatar}>P</span><span className={styles.accountName}><strong>{auth.username}</strong><small>Personal space</small></span><button className={styles.logoutButton} onClick={signOut}>Sign out</button></div>
       </aside>
       <section className={styles.workspace}>
-        <header className={styles.topbar}><span className={styles.breadcrumb}><a href="/projects">Projects</a><span>/</span>{project?.title ?? "Project"}</span><div className={styles.topbarActions}><a className={styles.manageButton} href="/projects">All projects</a></div></header>
+        <header className={styles.topbar}><span className={styles.breadcrumb}><Link href="/projects">Projects</Link><span>/</span>{project?.title ?? "Project"}</span><div className={styles.topbarActions}><Link className={styles.manageButton} href="/projects">All projects</Link></div></header>
         <div className={styles.content}>
           {error && <div className={styles.errorBanner} role="alert">{error}<button onClick={() => setError("")}>×</button></div>}
-          {!project ? <section className={styles.moduleEmpty}><h2>Project unavailable</h2><p>{error || "This project could not be found."}</p><a className={styles.secondaryButton} href="/projects">Back to projects</a></section> : <>
+          {!project ? <section className={styles.moduleEmpty}><h2>Project unavailable</h2><p>{error || "This project could not be found."}</p><Link className={styles.secondaryButton} href="/projects">Back to projects</Link></section> : <>
             <div className={styles.headingRow}>
               <div><p className={styles.eyebrow}>PROJECT DETAIL · {project.priority.toUpperCase()} PRIORITY</p><h1>{project.title}</h1><p className={styles.subtitle}>{project.description || "A focused space for milestones and related activity."}</p></div>
               <span className={`${styles.statusBadge} ${styles[`status_${project.status}`]}`}>{project.status}</span>
@@ -162,7 +164,7 @@ export default function ProjectDetailPage() {
               </div>
             </section>
             <section className={styles.analyticsPanel}>
-              <div className={styles.analyticsPanelHeading}><div><p className={styles.eyebrow}>TIME LOG</p><h2>Associated activities</h2></div><a className={styles.manageButton} href="/">Open activity log</a></div>
+              <div className={styles.analyticsPanelHeading}><div><p className={styles.eyebrow}>TIME LOG</p><h2>Associated activities</h2></div><Link className={styles.manageButton} href="/">Open activity log</Link></div>
               {project.activities.length ? <div className={styles.drilldownList}>{project.activities.map((activity) => <article className={styles.drilldownItem} key={activity.id}><div><strong>{activity.title}</strong><span>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(activity.started_at))} · {formatTime(activity.started_at)}–{formatTime(activity.ended_at)} · {activity.category.name}</span></div><small>{duration(activity.duration_seconds)}</small></article>)}</div> : <p className={styles.analyticsEmpty}>No activities are associated with this project yet. Choose the project when logging an activity.</p>}
               {project.activities.length === 100 && <p className={styles.analyticsNote}>Showing the latest 100 activities associated with this project.</p>}
             </section>

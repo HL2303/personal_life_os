@@ -1,18 +1,20 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import {
   Category,
   Project,
   ProjectInput,
   deleteProject,
-  getAuthSession,
   getCategories,
   getProjects,
   logout,
   saveProject,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import styles from "../page.module.css";
 
 type ProjectForm = {
@@ -46,9 +48,8 @@ function formatDate(value: string) {
 }
 
 export default function ProjectsPage() {
-  const [username, setUsername] = useState("");
-  const [authenticated, setAuthenticated] = useState(false);
-  const [authLoading, setAuthLoading] = useState(true);
+  const auth = useAuth();
+  const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
@@ -60,15 +61,17 @@ export default function ProjectsPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    getAuthSession()
-      .then((session) => {
-        setUsername(session.username);
-        setAuthenticated(true);
-      })
-      .catch(() => window.location.assign("/"))
-      .finally(() => setAuthLoading(false));
-    getCategories().then(setCategories).catch(() => undefined);
-  }, []);
+    if (auth.status === "unauthenticated") router.replace("/");
+  }, [auth.status, router]);
+
+  useEffect(() => {
+    if (auth.status !== "authenticated") return;
+    getCategories()
+      .then(setCategories)
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "Could not load categories."),
+      );
+  }, [auth.status]);
 
   async function loadProjects() {
     setLoading(true);
@@ -83,10 +86,10 @@ export default function ProjectsPage() {
   }
 
   useEffect(() => {
-    if (authenticated) void loadProjects();
+    if (auth.status === "authenticated") void loadProjects();
   // loadProjects tracks the archive filter.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authenticated, includeArchived]);
+  }, [auth.status, includeArchived]);
 
   const active = useMemo(() => projects.filter((project) => project.status === "active"), [projects]);
   const overdue = active.filter(
@@ -163,30 +166,33 @@ export default function ProjectsPage() {
   }
 
   async function signOut() {
+    let signOutError = "";
     try {
       await logout();
-    } finally {
-      window.location.assign("/");
+    } catch (cause) {
+      signOutError = cause instanceof Error ? cause.message : "Could not sign out.";
     }
+    auth.clearSession(signOutError);
+    router.replace("/");
   }
 
-  if (authLoading || !authenticated) {
-    return <main className={styles.loadingState}>{authLoading ? "Checking your session…" : "Redirecting…"}</main>;
+  if (auth.status !== "authenticated") {
+    return <main className={styles.loadingState}>{auth.status === "checking" ? "Checking your secure session…" : "Redirecting…"}</main>;
   }
 
   return (
     <main className={styles.app}>
       <aside className={styles.sidebar}>
-        <a className={styles.brand} href="/" aria-label="Personal Life OS home"><span className={styles.brandMark}>p</span><span>personal<span className={styles.brandLight}>life</span></span></a>
+        <Link className={styles.brand} href="/" aria-label="Personal Life OS home"><span className={styles.brandMark}>p</span><span>personal<span className={styles.brandLight}>life</span></span></Link>
         <div className={styles.sideLabel}>YOUR SPACE</div>
-        <a className={styles.navItem} href="/">◷ Activity</a>
-        <a className={styles.navItem} href="/analytics">▥ Analytics</a>
-        <a className={styles.navItem} href="/goals">◎ Goals</a>
-        <a className={`${styles.navItem} ${styles.navActive}`} href="/projects">▣ Projects</a>
-        <div className={styles.sidebarFoot}><span className={styles.avatar}>P</span><span className={styles.accountName}><strong>{username}</strong><small>Personal space</small></span><button className={styles.logoutButton} onClick={signOut}>Sign out</button></div>
+        <Link className={styles.navItem} href="/">◷ Activity</Link>
+        <Link className={styles.navItem} href="/analytics">▥ Analytics</Link>
+        <Link className={styles.navItem} href="/goals">◎ Goals</Link>
+        <Link className={`${styles.navItem} ${styles.navActive}`} href="/projects">▣ Projects</Link>
+        <div className={styles.sidebarFoot}><span className={styles.avatar}>P</span><span className={styles.accountName}><strong>{auth.username}</strong><small>Personal space</small></span><button className={styles.logoutButton} onClick={signOut}>Sign out</button></div>
       </aside>
       <section className={styles.workspace}>
-        <header className={styles.topbar}><span className={styles.breadcrumb}>My space <span>/</span> Projects</span><div className={styles.topbarActions}><a className={styles.manageButton} href="/goals">Goals</a></div></header>
+        <header className={styles.topbar}><span className={styles.breadcrumb}>My space <span>/</span> Projects</span><div className={styles.topbarActions}><Link className={styles.manageButton} href="/goals">Goals</Link></div></header>
         <div className={styles.content}>
           <div className={styles.headingRow}>
             <div><p className={styles.eyebrow}>TURN PLANS INTO MILESTONES</p><h1>Projects</h1><p className={styles.subtitle}>Project progress is completed milestones divided by all milestones.</p></div>
@@ -197,7 +203,7 @@ export default function ProjectsPage() {
             <article><span>ACTIVE PROJECTS</span><strong>{active.length}</strong></article>
             <article><span>OVERDUE TARGETS</span><strong className={overdue.length ? styles.overdueText : ""}>{overdue.length}</strong></article>
             <article><span>DUE IN 7 DAYS</span><strong>{upcoming.length}</strong></article>
-            <a href="/goals"><span>ACTIVE GOALS</span><strong>View goals →</strong></a>
+            <Link href="/goals"><span>ACTIVE GOALS</span><strong>View goals →</strong></Link>
           </section>
           <div className={styles.moduleToolbar}><p>{includeArchived ? "Including archived projects" : "Current projects"}</p><label><input type="checkbox" checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} /> Show archived</label></div>
           {loading ? <div className={styles.loadingState}>Loading your projects…</div> : projects.length === 0 ? (
@@ -207,13 +213,13 @@ export default function ProjectsPage() {
               {projects.map((project) => (
                 <article className={styles.moduleCard} key={project.id}>
                   <div className={styles.moduleCardTop}><div><span className={`${styles.statusBadge} ${styles[`status_${project.status}`]}`}>{project.status}</span><span className={styles.goalType}>{project.priority} priority</span></div><div className={styles.moduleCardActions}><button onClick={() => openEdit(project)}>Edit</button>{project.status !== "archived" && <button onClick={() => void archive(project)}>Archive</button>}<button className={styles.textDanger} onClick={() => void remove(project)}>Delete</button></div></div>
-                  <a className={styles.projectCardLink} href={`/projects/${project.id}`}><h2>{project.title}</h2></a>
+                  <Link className={styles.projectCardLink} href={`/projects/${project.id}`}><h2>{project.title}</h2></Link>
                   {project.description && <p className={styles.moduleDescription}>{project.description}</p>}
                   <div className={styles.progressLabel}><strong>{project.progress_percent}%</strong><span>{project.completed_milestone_count} of {project.milestone_count} milestones</span></div>
                   <div className={styles.progressTrack}><i style={{ width: `${project.progress_percent}%` }} /></div>
                   <div className={styles.goalMeta}><span>{project.category_name ?? "Uncategorized"}</span><span>{project.target_date ? `Target · ${formatDate(project.target_date)}` : `Started · ${formatDate(project.start_date)}`}</span></div>
                   <p className={styles.analyticsNote}>Progress formula: completed milestones ÷ all milestones. With no milestones, progress is 0%.</p>
-                  <a className={styles.projectDetailLink} href={`/projects/${project.id}`}>Open project details →</a>
+                  <Link className={styles.projectDetailLink} href={`/projects/${project.id}`}>Open project details →</Link>
                 </article>
               ))}
             </div>

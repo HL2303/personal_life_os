@@ -1,6 +1,8 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import {
   Category,
@@ -8,7 +10,6 @@ import {
   GoalInput,
   createGoalMilestone,
   deleteGoal,
-  getAuthSession,
   getCategories,
   getGoals,
   logout,
@@ -16,6 +17,7 @@ import {
   updateGoalMilestone,
   updateGoalProgress,
 } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import styles from "../page.module.css";
 
 type GoalForm = {
@@ -82,9 +84,8 @@ function formatValue(value: number | null, unit: string | null) {
 }
 
 export default function GoalsPage() {
-  const [username, setUsername] = useState("");
-  const [authenticated, setAuthenticated] = useState(false);
-  const [authLoading, setAuthLoading] = useState(true);
+  const auth = useAuth();
+  const router = useRouter();
   const [goals, setGoals] = useState<Goal[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
@@ -98,15 +99,17 @@ export default function GoalsPage() {
   const [milestoneDrafts, setMilestoneDrafts] = useState<Record<number, string>>({});
 
   useEffect(() => {
-    getAuthSession()
-      .then((session) => {
-        setUsername(session.username);
-        setAuthenticated(true);
-      })
-      .catch(() => window.location.assign("/"))
-      .finally(() => setAuthLoading(false));
-    getCategories().then(setCategories).catch(() => undefined);
-  }, []);
+    if (auth.status === "unauthenticated") router.replace("/");
+  }, [auth.status, router]);
+
+  useEffect(() => {
+    if (auth.status !== "authenticated") return;
+    getCategories()
+      .then(setCategories)
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "Could not load categories."),
+      );
+  }, [auth.status]);
 
   async function loadGoals() {
     setLoading(true);
@@ -121,10 +124,10 @@ export default function GoalsPage() {
   }
 
   useEffect(() => {
-    if (authenticated) void loadGoals();
+    if (auth.status === "authenticated") void loadGoals();
   // loadGoals is intentionally refreshed by the archive filter.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authenticated, includeArchived]);
+  }, [auth.status, includeArchived]);
 
   const activeGoals = useMemo(() => goals.filter((goal) => goal.status === "active"), [goals]);
   const overdueGoals = activeGoals.filter((goal) => goal.overdue);
@@ -233,30 +236,33 @@ export default function GoalsPage() {
   }
 
   async function signOut() {
+    let signOutError = "";
     try {
       await logout();
-    } finally {
-      window.location.assign("/");
+    } catch (cause) {
+      signOutError = cause instanceof Error ? cause.message : "Could not sign out.";
     }
+    auth.clearSession(signOutError);
+    router.replace("/");
   }
 
-  if (authLoading || !authenticated) {
-    return <main className={styles.loadingState}>{authLoading ? "Checking your session…" : "Redirecting…"}</main>;
+  if (auth.status !== "authenticated") {
+    return <main className={styles.loadingState}>{auth.status === "checking" ? "Checking your secure session…" : "Redirecting…"}</main>;
   }
 
   return (
     <main className={styles.app}>
       <aside className={styles.sidebar}>
-        <a className={styles.brand} href="/" aria-label="Personal Life OS home"><span className={styles.brandMark}>p</span><span>personal<span className={styles.brandLight}>life</span></span></a>
+        <Link className={styles.brand} href="/" aria-label="Personal Life OS home"><span className={styles.brandMark}>p</span><span>personal<span className={styles.brandLight}>life</span></span></Link>
         <div className={styles.sideLabel}>YOUR SPACE</div>
-        <a className={styles.navItem} href="/">◷ Activity</a>
-        <a className={styles.navItem} href="/analytics">▥ Analytics</a>
-        <a className={`${styles.navItem} ${styles.navActive}`} href="/goals">◎ Goals</a>
-        <a className={styles.navItem} href="/projects">▣ Projects</a>
-        <div className={styles.sidebarFoot}><span className={styles.avatar}>P</span><span className={styles.accountName}><strong>{username}</strong><small>Personal space</small></span><button className={styles.logoutButton} onClick={signOut}>Sign out</button></div>
+        <Link className={styles.navItem} href="/">◷ Activity</Link>
+        <Link className={styles.navItem} href="/analytics">▥ Analytics</Link>
+        <Link className={`${styles.navItem} ${styles.navActive}`} href="/goals">◎ Goals</Link>
+        <Link className={styles.navItem} href="/projects">▣ Projects</Link>
+        <div className={styles.sidebarFoot}><span className={styles.avatar}>P</span><span className={styles.accountName}><strong>{auth.username}</strong><small>Personal space</small></span><button className={styles.logoutButton} onClick={signOut}>Sign out</button></div>
       </aside>
       <section className={styles.workspace}>
-        <header className={styles.topbar}><span className={styles.breadcrumb}>My space <span>/</span> Goals</span><div className={styles.topbarActions}><a className={styles.manageButton} href="/projects">Projects</a></div></header>
+        <header className={styles.topbar}><span className={styles.breadcrumb}>My space <span>/</span> Goals</span><div className={styles.topbarActions}><Link className={styles.manageButton} href="/projects">Projects</Link></div></header>
         <div className={styles.content}>
           <div className={styles.headingRow}>
             <div><p className={styles.eyebrow}>MAKE PROGRESS INTENTIONAL</p><h1>Goals</h1><p className={styles.subtitle}>Track progress you choose to record. Activities are never inferred.</p></div>
@@ -267,7 +273,7 @@ export default function GoalsPage() {
             <article><span>ACTIVE GOALS</span><strong>{activeGoals.length}</strong></article>
             <article><span>OVERDUE</span><strong className={overdueGoals.length ? styles.overdueText : ""}>{overdueGoals.length}</strong></article>
             <article><span>DUE IN 7 DAYS</span><strong>{upcomingGoals.length}</strong></article>
-            <a href="/projects"><span>ACTIVE PROJECTS</span><strong>View projects →</strong></a>
+            <Link href="/projects"><span>ACTIVE PROJECTS</span><strong>View projects →</strong></Link>
           </section>
           <div className={styles.moduleToolbar}>
             <p>{includeArchived ? "Including archived goals" : "Active, paused and completed goals"}</p>

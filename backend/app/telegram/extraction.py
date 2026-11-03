@@ -16,6 +16,22 @@ from app.schemas.activity import ActivityCreate
 
 logger = logging.getLogger(__name__)
 CONFIDENCE_THRESHOLD = 0.8
+SAFE_PROVIDER_ERROR_TYPES = {
+    "api_error",
+    "authentication_error",
+    "invalid_request_error",
+    "rate_limit_error",
+    "server_error",
+}
+SAFE_PROVIDER_ERROR_CODES = {
+    "context_length_exceeded",
+    "insufficient_quota",
+    "invalid_api_key",
+    "invalid_request_error",
+    "model_not_found",
+    "rate_limit_exceeded",
+    "server_error",
+}
 
 
 class ExtractedActivity(BaseModel):
@@ -46,6 +62,26 @@ class ExtractionResponse(BaseModel):
 
 class ActivityParsingError(Exception):
     pass
+
+
+def _sanitize_provider_error(response: bytes) -> str:
+    try:
+        body = json.loads(response)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        body = None
+
+    error = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(error, dict):
+        return '{"error":"unavailable"}'
+
+    sanitized = {}
+    error_type = error.get("type")
+    if isinstance(error_type, str) and error_type in SAFE_PROVIDER_ERROR_TYPES:
+        sanitized["type"] = error_type
+    code = error.get("code")
+    if isinstance(code, str) and code in SAFE_PROVIDER_ERROR_CODES:
+        sanitized["code"] = code
+    return json.dumps({"error": sanitized or "unavailable"}, separators=(",", ":"))
 
 
 def _call_provider(prompt: str) -> ExtractionResponse:
@@ -98,8 +134,20 @@ def _call_provider(prompt: str) -> ExtractionResponse:
             data = json.loads(response.read())
         content = data["choices"][0]["message"]["content"]
         return ExtractionResponse.model_validate_json(content)
+    except HTTPError as exc:
+        try:
+            response_body = exc.read()
+        except OSError:
+            response_body = b""
+        logger.warning(
+            "Activity extraction provider HTTP error; status_code=%s sanitized_response=%s",
+            exc.code,
+            _sanitize_provider_error(response_body),
+        )
+        raise ActivityParsingError(
+            "I couldn't process that message right now. Please try again shortly."
+        ) from None
     except (
-        HTTPError,
         URLError,
         TimeoutError,
         OSError,

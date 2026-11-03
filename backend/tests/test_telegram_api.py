@@ -1,4 +1,7 @@
+import io
+import json
 from datetime import UTC, datetime, time, timedelta
+from urllib.error import HTTPError
 
 import pytest
 from pydantic import SecretStr
@@ -373,6 +376,49 @@ def test_activity_extraction_supports_multiple_and_requests_clarification(
         )
         assert activities == []
         assert clarification
+
+
+def test_activity_extraction_logs_sanitized_http_provider_error(monkeypatch, caplog):
+    from app.telegram import extraction
+
+    api_key = "private-test-api-key"
+    user_message = "private user message that must never appear in logs"
+    provider_body = {
+        "error": {
+            "message": f"Rejected: {user_message}; credential={api_key}",
+            "type": "rate_limit_error",
+            "code": "rate_limit_exceeded",
+            "authorization": "Bearer private-header",
+        }
+    }
+    error = HTTPError(
+        "https://provider.test/v1/chat/completions",
+        429,
+        "Too Many Requests",
+        {},
+        io.BytesIO(json.dumps(provider_body).encode()),
+    )
+    monkeypatch.setattr(settings, "ai_provider", "openai_compatible")
+    monkeypatch.setattr(settings, "ai_api_key", SecretStr(api_key))
+
+    def fail_provider_request(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(extraction, "urlopen", fail_provider_request)
+
+    with caplog.at_level("WARNING", logger=extraction.__name__):
+        with pytest.raises(extraction.ActivityParsingError, match="try again shortly"):
+            extraction._call_provider(
+                json.dumps({"user_message": user_message, "api_key": api_key})
+            )
+
+    assert "status_code=429" in caplog.text
+    assert '"type":"rate_limit_error"' in caplog.text
+    assert '"code":"rate_limit_exceeded"' in caplog.text
+    assert user_message not in caplog.text
+    assert api_key not in caplog.text
+    assert "private-header" not in caplog.text
+    assert "Rejected:" not in caplog.text
 
 
 def test_worker_persists_checkins_respects_quiet_hours_and_retries(client, database):

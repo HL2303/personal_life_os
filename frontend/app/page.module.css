@@ -1,0 +1,19 @@
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 999px;
+  background: #eef7f1;
+  color: #28643c;
+  font-size: 0.875rem;
+}
+
+.status::before {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}

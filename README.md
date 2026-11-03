@@ -1,8 +1,7 @@
 # Personal Life OS
 
-Personal Life OS is being built in phases. This repository currently contains
-the Phase 0 application and database foundation; product features will be added
-in later phases.
+Personal Life OS is being built in phases. The current V1 slice includes a
+private single-user workspace and end-to-end activity tracking.
 
 ## Stack
 
@@ -29,6 +28,7 @@ Requirements: Node.js 20+, Python 3.11+, and Docker Compose.
    # Activate .venv for your shell, then:
    pip install -e ".[dev]"
    copy .env.example .env
+   alembic upgrade head
    uvicorn app.main:app --reload
    ```
 
@@ -50,19 +50,59 @@ The frontend is available at <http://localhost:3000>. The API health endpoints
 are `/health` (liveness) and `/health/ready` (database readiness); interactive
 API documentation is available at `/docs`.
 
-Alembic is configured to use the SQLAlchemy metadata in `backend/app/db`.
-There are no domain tables or migrations yet; create the first migration when
-the initial domain model is defined.
+Alembic migrations create the initial account/session and user-owned activity
+schema. Apply migrations with `alembic upgrade head` from `backend/` after
+configuring the database URL. Open <http://localhost:3000> and create the first
+account; once created, public account setup is disabled.
+
+## Telegram check-ins
+
+The Telegram integration is optional. Configure `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_BOT_USERNAME`, and a random `TELEGRAM_WEBHOOK_SECRET` in the backend
+environment. To register a webhook after you have a public HTTPS endpoint,
+set `TELEGRAM_WEBHOOK_URL` to its origin and run
+`python -m app.telegram.configure_webhook` from `backend/`. This registers only
+the `/api/telegram/webhook` endpoint; do not expose it before configuring its
+secret.
+
+Run `python -m app.telegram.worker` as a separately supervised backend process
+to deliver scheduled check-ins and queued replies. Scheduling and delivery
+state is persisted in PostgreSQL, not in the web server process. Link the bot
+from **Telegram** in the app, then configure the interval, timezone, active
+hours, and quiet hours there. Bot commands include `/start`, `/link`, `/pause`,
+`/resume`, `/today`, `/skip`, and `/help`.
+
+Natural-language extraction is opt-in. Set `AI_PROVIDER=openai_compatible`,
+`AI_API_KEY`, and `AI_MODEL` (and optionally `AI_BASE_URL`) to enable it. When
+an AI provider is not configured, Telegram activity text is not logged; the
+app asks the user to enter it in the dashboard instead. When configured,
+Telegram message text, the user's categories, and local date/time context are
+sent to that provider for extraction. Low-confidence or incomplete results
+require clarification and are not saved.
 
 ## Validation
 
 From `backend/`, run `pytest` and `ruff check app tests`. From `frontend/`, run
 `npm run typecheck` or `npm run build`.
 
+## Project documentation
+
+- [Product requirements (working draft)](docs/PRD.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Database](docs/DATABASE.md)
+- [Roadmap](docs/ROADMAP.md)
+
 ## Security and scope
 
 Configuration is loaded from untracked local environment files. The committed
 example files contain development-only settings and must not be used as
-production credentials. Authentication and user-owned data models are
-intentionally not included in this infrastructure-only phase; future data
-access must be scoped to the authenticated user.
+production credentials. Passwords are Argon2id-hashed, session tokens are
+stored as hashes, browser sessions use HttpOnly/SameSite cookies, and
+state-changing requests require same-origin and CSRF validation. Activity,
+category, and subcategory queries are scoped to the authenticated account.
+
+Before any production use, configure a private PostgreSQL database and secret
+credentials, set `APP_ENV=production` and `SESSION_COOKIE_SECURE=true`, serve
+the frontend and API over HTTPS, and configure deployment-level request
+rate-limiting, backups, and recovery. Production mode disables interactive API
+documentation. This repository has not been deployed.

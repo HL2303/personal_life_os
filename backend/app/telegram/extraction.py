@@ -97,6 +97,133 @@ TAXONOMY_ALIASES = {
     "studied": {"learning"},
     "workout": {"fitness", "exercise"},
 }
+_TIME_RANGE_PATTERN = re.compile(
+    r"\b(?:from\s+)?"
+    r"(?P<start_hour>1[0-2]|0?[1-9]|2[0-3])"
+    r"(?::(?P<start_minute>[0-5]\d))?\s*(?P<start_meridiem>am|pm)?\s*"
+    r"(?:to|[-–])\s*"
+    r"(?P<end_hour>1[0-2]|0?[1-9]|2[0-3])"
+    r"(?::(?P<end_minute>[0-5]\d))?\s*(?P<end_meridiem>am|pm)?\b",
+    re.IGNORECASE,
+)
+_CLOCK_TIME_PATTERN = re.compile(
+    r"\b(?:at|around|from|starting|started|beginning|began)?\s*"
+    r"(?:1[0-2]|0?[1-9]|2[0-3])(?::[0-5]\d)\s*(?:am|pm)?\b"
+    r"|\b(?:at|around|from|starting|started|beginning|began)\s+"
+    r"(?:1[0-2]|0?[1-9]|2[0-3])\s*(?:am|pm)?\b",
+    re.IGNORECASE,
+)
+_DURATION_PATTERN = re.compile(
+    r"\b(?:for\s+)?(?P<amount>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>hours?|hrs?|minutes?|mins?)\b"
+    r"|\bfor\s+(?P<word>an?\s+hour|half an hour)\b",
+    re.IGNORECASE,
+)
+
+
+def _conversation_user_text(message: str) -> str:
+    lines = []
+    for line in message.splitlines():
+        stripped = line.strip()
+        if stripped.casefold().startswith("previous extraction:"):
+            continue
+        for prefix in ("Earlier activity details:", "Clarification:"):
+            if stripped.casefold().startswith(prefix.casefold()):
+                stripped = stripped[len(prefix) :].strip()
+                break
+        if stripped:
+            lines.append(stripped)
+    return " ".join(lines)
+
+
+def _explicit_duration_minutes(message: str) -> int | None:
+    match = _DURATION_PATTERN.search(message)
+    if match is None:
+        return None
+    word = match.group("word")
+    if word:
+        return 30 if word.casefold() == "half an hour" else 60
+    amount = float(match.group("amount"))
+    multiplier = 60 if match.group("unit").casefold().startswith(("h", "hr")) else 1
+    duration = amount * multiplier
+    return int(duration) if duration.is_integer() else None
+
+
+def _has_explicit_time(message: str) -> bool:
+    return bool(_TIME_RANGE_PATTERN.search(message) or _CLOCK_TIME_PATTERN.search(message))
+
+
+def _has_explicit_interval(message: str) -> bool:
+    return bool(_TIME_RANGE_PATTERN.search(message)) or len(
+        _CLOCK_TIME_PATTERN.findall(message)
+    ) >= 2
+
+
+def _explicit_local_time_range(
+    message: str,
+    candidate: ExtractedActivity,
+    timezone: ZoneInfo,
+    local_now: datetime,
+) -> tuple[datetime, datetime] | None:
+    matches = list(_TIME_RANGE_PATTERN.finditer(message))
+    if len(matches) != 1:
+        return None
+    match = matches[0]
+    start_hour = int(match.group("start_hour"))
+    end_hour = int(match.group("end_hour"))
+    start_meridiem = match.group("start_meridiem")
+    end_meridiem = match.group("end_meridiem")
+    if start_meridiem is None:
+        start_meridiem = end_meridiem
+    if end_meridiem is None:
+        end_meridiem = start_meridiem
+
+    def local_hour(
+        hour: int,
+        meridiem: str | None,
+        model_value: datetime | None,
+    ) -> int:
+        if meridiem is not None:
+            hour %= 12
+            return hour + (12 if meridiem.casefold() == "pm" else 0)
+        if hour <= 12 and model_value is not None:
+            plausible_hours = {hour % 12, (hour % 12) + 12}
+            local_model_hour = model_value.astimezone(timezone).hour
+            if local_model_hour in plausible_hours:
+                return local_model_hour
+            if model_value.hour in plausible_hours:
+                return model_value.hour
+        return hour
+
+    date = local_now.date()
+    if candidate.started_at is not None:
+        expected_local_hours = {
+            local_hour(start_hour, start_meridiem, candidate.started_at)
+        }
+        localized_date = candidate.started_at.astimezone(timezone).date()
+        localized_hour = candidate.started_at.astimezone(timezone).hour
+        if localized_hour in expected_local_hours:
+            date = localized_date
+        else:
+            date = candidate.started_at.date()
+    lowered = message.casefold()
+    if "yesterday" in lowered or "last night" in lowered:
+        date = local_now.date() - timedelta(days=1)
+    elif "today" in lowered:
+        date = local_now.date()
+
+    start_time = datetime.min.replace(
+        hour=local_hour(start_hour, start_meridiem, candidate.started_at),
+        minute=int(match.group("start_minute") or 0),
+    ).time()
+    end_time = datetime.min.replace(
+        hour=local_hour(end_hour, end_meridiem, candidate.ended_at),
+        minute=int(match.group("end_minute") or 0),
+    ).time()
+    start = datetime.combine(date, start_time, tzinfo=timezone)
+    end_date = date + timedelta(days=1) if end_time <= start_time else date
+    end = datetime.combine(end_date, end_time, tzinfo=timezone)
+    return start, end
 
 
 def _resolve_timezone(timezone: str | None) -> tuple[str, ZoneInfo]:
@@ -176,6 +303,8 @@ def _activity_summary(
     candidate: ExtractedActivity,
     category_name: str | None = None,
     subcategory_name: str | None = None,
+    *,
+    include_timing: bool = True,
 ) -> str:
     parts = [candidate.title]
     if candidate.category or category_name:
@@ -183,13 +312,39 @@ def _activity_summary(
     if candidate.subcategory or subcategory_name:
         parts.append(subcategory_name or candidate.subcategory or "")
     time_summary = ""
-    if candidate.started_at and candidate.ended_at:
+    if include_timing and candidate.started_at and candidate.ended_at:
         time_summary = (
             f", {candidate.started_at.isoformat()}–{candidate.ended_at.isoformat()}"
         )
-    elif candidate.duration_minutes:
+    elif include_timing and candidate.duration_minutes:
         time_summary = f", {candidate.duration_minutes} minutes"
     return f"I have: {' · '.join(parts)}{time_summary}."
+
+
+def _timing_clarification(
+    candidate: ExtractedActivity,
+    category: ActivityCategory,
+    observation_start: datetime | None,
+    observation_end: datetime | None,
+    timezone: ZoneInfo,
+    explicit_duration: int | None,
+) -> str:
+    summary = f"I have: {candidate.title} · {category.name}."
+    if explicit_duration is not None:
+        summary = f"{summary[:-1]}, {explicit_duration} minutes."
+        question = "What time did it start?"
+    else:
+        question = "What were the start and end times?"
+    if observation_start is not None and observation_end is not None:
+        start = observation_start.astimezone(timezone).strftime("%b %d, %I:%M %p")
+        end = observation_end.astimezone(timezone).strftime("%b %d, %I:%M %p")
+        start = start.replace(" 0", " ")
+        end = end.replace(" 0", " ")
+        return (
+            f"{summary} Your check-ins place it sometime between {start} and {end}, "
+            f"but don't establish its exact time or duration. {question}"
+        )
+    return f"{summary} {question}"
 
 
 def _parse_retry_after(value: str | None, *, now: datetime | None = None) -> int | None:
@@ -297,8 +452,13 @@ def _call_provider(prompt: str) -> ExtractionResponse:
                             "conversation. "
                             "If the text responds to a check-in, use its time window as context "
                             "but do not assume the activity occupied the entire window. If the "
-                            "message has multiple activities, extract each separately. Do not "
-                            "create overlapping or guessed intervals."
+                                "message has multiple activities, extract each separately. Do not "
+                                "create overlapping or guessed intervals. The check-in observation "
+                                "window only bounds when an activity may have happened. It does "
+                                "not establish an exact start time, end time, or duration. If the "
+                                "user does not explicitly give an exact time range, or an exact "
+                                "time plus duration, leave those fields null and ask for them. "
+                                "Never use a one-hour default."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -379,8 +539,8 @@ def extract_activities(
     timezone: str | None,
     *,
     now: datetime | None = None,
-    checkin_sent_at: datetime | None = None,
-    checkin_interval_minutes: int | None = None,
+    observation_start: datetime | None = None,
+    observation_end: datetime | None = None,
 ) -> tuple[list[ActivityCreate], str | None]:
     timezone_name, local_zone = _resolve_timezone(timezone)
     categories = list(
@@ -403,22 +563,33 @@ def extract_activities(
         instant = instant.replace(tzinfo=UTC)
     local_now = instant.astimezone(local_zone)
     checkin_context = None
-    if checkin_sent_at is not None:
-        sent_at = checkin_sent_at
-        if sent_at.tzinfo is None or sent_at.utcoffset() is None:
-            sent_at = sent_at.replace(tzinfo=UTC)
+    if observation_start is not None or observation_end is not None:
+        start = observation_start
+        end = observation_end
+        if start is not None and (start.tzinfo is None or start.utcoffset() is None):
+            start = start.replace(tzinfo=UTC)
+        if end is not None and (end.tzinfo is None or end.utcoffset() is None):
+            end = end.replace(tzinfo=UTC)
         checkin_context = {
-            "from_local": sent_at.astimezone(local_zone).isoformat(),
-            "to_local": local_now.isoformat(),
-            "configured_interval_minutes": checkin_interval_minutes,
+            "observation_start_local": start.astimezone(local_zone).isoformat()
+            if start is not None
+            else None,
+            "observation_end_local": end.astimezone(local_zone).isoformat()
+            if end is not None
+            else None,
+            "timing_is_approximate_only": True,
         }
+    user_text = _conversation_user_text(message)
+    has_explicit_interval = _has_explicit_interval(user_text)
+    has_explicit_time = _has_explicit_time(user_text)
+    explicit_duration = _explicit_duration_minutes(user_text)
     prompt = json.dumps(
         {
             "current_local_datetime": local_now.isoformat(),
             "timezone": timezone_name,
             "allowed_categories": category_data,
             "checkin_context": checkin_context,
-            "user_message": message,
+            "user_message": user_text,
         },
         ensure_ascii=False,
     )
@@ -445,6 +616,7 @@ def extract_activities(
                         item,
                         category.name if category is not None else None,
                         subcategory,
+                        include_timing=False,
                     )
                 )
             summary = "; ".join(summaries)
@@ -455,15 +627,6 @@ def extract_activities(
 
     activities: list[ActivityCreate] = []
     for candidate in extraction.activities:
-        if candidate.confidence < CONFIDENCE_THRESHOLD:
-            question = (
-                "Can you confirm that I understood the activity correctly?"
-                if candidate.started_at is not None and candidate.ended_at is not None
-                else "What were the start and end times?"
-            )
-            return [], (
-                f"{_activity_summary(candidate)} {question}"
-            )
         category = _infer_category(candidate, categories, message)
         if category is None:
             return [], (
@@ -471,14 +634,70 @@ def extract_activities(
                 + ", ".join(item.name for item in categories)
             )
         subcategory_id = _infer_subcategory(candidate, category, message)
+        if not has_explicit_interval and not (
+            has_explicit_time and explicit_duration is not None
+        ):
+            return [], _timing_clarification(
+                candidate,
+                category,
+                observation_start,
+                observation_end,
+                local_zone,
+                explicit_duration,
+            )
+        if candidate.confidence < CONFIDENCE_THRESHOLD:
+            question = (
+                "Can you confirm that I understood the activity correctly?"
+                if candidate.started_at is not None and candidate.ended_at is not None
+                else "What were the start and end times?"
+            )
+            return [], (
+                f"{_activity_summary(candidate, category.name)} {question}"
+            )
         started_at = candidate.started_at
         ended_at = candidate.ended_at
-        if candidate.duration_minutes and (started_at is None) != (ended_at is None):
-            duration = timedelta(minutes=candidate.duration_minutes)
+        explicit_time_range = _explicit_local_time_range(
+            user_text,
+            candidate,
+            local_zone,
+            local_now,
+        )
+        if explicit_time_range is not None:
+            started_at, ended_at = explicit_time_range
+        if not has_explicit_interval and explicit_duration is not None:
+            if candidate.duration_minutes not in {None, explicit_duration}:
+                return [], _timing_clarification(
+                    candidate,
+                    category,
+                    observation_start,
+                    observation_end,
+                    local_zone,
+                    explicit_duration,
+                )
+            duration = timedelta(minutes=explicit_duration)
             if started_at is not None:
-                ended_at = started_at + duration
+                expected_end = started_at + duration
+                if ended_at is not None and ended_at != expected_end:
+                    return [], _timing_clarification(
+                        candidate,
+                        category,
+                        observation_start,
+                        observation_end,
+                        local_zone,
+                        explicit_duration,
+                    )
+                ended_at = expected_end
             elif ended_at is not None:
                 started_at = ended_at - duration
+        elif not has_explicit_interval and (started_at is None or ended_at is None):
+            return [], _timing_clarification(
+                candidate,
+                category,
+                observation_start,
+                observation_end,
+                local_zone,
+                explicit_duration,
+            )
         if started_at is None or ended_at is None:
             detail = (
                 f"I have: {candidate.title} · {category.name}"

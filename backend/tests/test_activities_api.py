@@ -1,4 +1,9 @@
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import select
+
+from app.models.activity import Activity, User
 
 
 def create_category(client, name="Work"):
@@ -105,6 +110,40 @@ def test_activity_create_read_update_delete_and_category_protection(client):
     assert deleted.status_code == 204
     assert client.get(f"/api/activities/{body['id']}").status_code == 404
     assert client.delete(f"/api/categories/{category['id']}").json() == {"deleted": True}
+
+
+def test_manual_local_time_is_stored_in_utc_and_reads_back_in_user_timezone(
+    client, database
+):
+    category = create_category(client)
+    created = client.post(
+        "/api/activities",
+        json=activity_payload(
+            category["id"],
+            title="Eating food",
+            started_at="2026-11-24T09:50:00+05:30",
+            ended_at="2026-11-24T10:30:00+05:30",
+        ),
+    )
+    assert created.status_code == 201
+    with database() as db:
+        user = db.scalar(select(User).where(User.username == "owner"))
+        activity = db.scalar(select(Activity).where(Activity.user_id == user.id))
+        assert activity.started_at == datetime(2026, 11, 24, 4, 20)
+        assert activity.ended_at == datetime(2026, 11, 24, 5, 0)
+
+    payload = client.get(f"/api/activities/{created.json()['id']}").json()
+    start = datetime.fromisoformat(payload["started_at"])
+    end = datetime.fromisoformat(payload["ended_at"])
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    local_start = start.astimezone(ZoneInfo("Asia/Kolkata"))
+    local_end = end.astimezone(ZoneInfo("Asia/Kolkata"))
+    assert (local_start.hour, local_start.minute) == (9, 50)
+    assert (local_end.hour, local_end.minute) == (10, 30)
+    assert payload["duration_seconds"] == 2400
 
 
 def test_activity_source_and_subcategory_deletion(client):

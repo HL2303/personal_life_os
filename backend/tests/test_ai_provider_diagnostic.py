@@ -56,6 +56,7 @@ def test_make_request_uses_fixed_prompt_and_only_requested_parameters():
         "messages": [{"role": "user", "content": "Reply with OK."}],
     }
     assert request.get_header("Authorization") == "Bearer diagnostic-api-key"
+    assert request.get_header("User-agent") == diagnostic.USER_AGENT
     assert "diagnostic-api-key" not in json.dumps(payload)
 
 
@@ -73,6 +74,7 @@ def test_activity_options_probe_matches_parameters_under_investigation():
         "temperature": 0,
         "response_format": {"type": "json_object"},
     }
+    assert request.get_header("User-agent") == diagnostic.USER_AGENT
 
 
 def test_http_probe_returns_only_status_and_safe_provider_metadata(monkeypatch):

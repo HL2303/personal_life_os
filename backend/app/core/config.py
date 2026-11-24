@@ -4,6 +4,8 @@ from functools import lru_cache
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+USER_AGENT = "personal-life-os/1.0"
+
 
 class Settings(BaseSettings):
     app_env: str = "development"

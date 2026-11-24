@@ -171,6 +171,40 @@ def test_webhook_reuses_activity_validation_and_deduplicates_activity(
         assert activity.source == "telegram"
 
 
+def test_activity_extraction_request_sends_application_user_agent(monkeypatch):
+    from app.core.config import USER_AGENT
+    from app.telegram import extraction
+
+    api_key = "private-provider-key"
+    monkeypatch.setattr(settings, "ai_provider", "openai_compatible")
+    monkeypatch.setattr(settings, "ai_api_key", SecretStr(api_key))
+    captured = {}
+
+    class SuccessfulResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def success(request, timeout):
+        captured["request"] = request
+        response = {
+            "choices": [
+                {"message": {"content": '{"activities":[],"clarification":"Please clarify."}'}}
+            ]
+        }
+        return SuccessfulResponse(json.dumps(response).encode())
+
+    monkeypatch.setattr(extraction, "urlopen", success)
+
+    extraction._call_provider("fixed test prompt")
+
+    request = captured["request"]
+    assert request.get_header("User-agent") == USER_AGENT
+    assert request.get_header("Authorization") == f"Bearer {api_key}"
+
+
 @pytest.mark.parametrize("http_status", [500, 503])
 def test_provider_retries_repeated_transient_errors_with_bounded_attempts(
     monkeypatch, caplog, http_status

@@ -14,6 +14,7 @@ from app.models.telegram import (
     TelegramOutbox,
 )
 from app.telegram.bot_api import TelegramAPIError, send_message
+from app.telegram.pending import claim_pending_activities, process_pending_activity
 from app.telegram.scheduling import is_checkin_time_allowed, next_checkin_time
 
 logger = logging.getLogger(__name__)
@@ -191,6 +192,20 @@ def _drain_due(
     return sent, len(due_ids) - sent
 
 
+def _retry_pending_activities(
+    session_factory: sessionmaker[Session],
+    *,
+    now: datetime,
+) -> tuple[int, int]:
+    pending_ids = claim_pending_activities(session_factory, now=now)
+    completed = sum(
+        1
+        for pending_id in pending_ids
+        if process_pending_activity(session_factory, pending_id, now=now)
+    )
+    return completed, len(pending_ids) - completed
+
+
 def run_once(
     session_factory: sessionmaker[Session] = SessionLocal,
     *,
@@ -206,6 +221,10 @@ def run_once(
         now=instant,
         sender=sender,
     )
+    retried_activities, pending_activities = _retry_pending_activities(
+        session_factory,
+        now=instant,
+    )
     sent_replies, failed_replies = _drain_due(
         session_factory,
         TelegramOutbox,
@@ -217,6 +236,8 @@ def run_once(
         "scheduled": scheduled,
         "checkins_sent": sent_checkins,
         "checkins_pending_or_failed": failed_checkins,
+        "activities_retried": retried_activities,
+        "activities_pending_or_failed": pending_activities,
         "replies_sent": sent_replies,
         "replies_pending_or_failed": failed_replies,
     }

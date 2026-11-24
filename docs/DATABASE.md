@@ -69,7 +69,9 @@ postgresql+psycopg://personal_life_os:local-dev-only@localhost:5432/personal_lif
   Telegram update IDs are unique. Persistent check-in and outbox rows retain
   delivery, response, skip, and failure status for worker retries.
 - Telegram message text is retained in update records and pending
-  clarification state to support processing/retries. Configure an AI provider
+  clarification state; unavailable-provider extraction messages are retained
+  in a user-scoped pending table for bounded automatic retries and can be
+  requeued by that linked Telegram user with `/retry`. Configure an AI provider
   only after reviewing its data-handling terms; message text and category
   context are sent to the configured provider for extraction.
 - Telegram check-in delivery and retry state is persisted in PostgreSQL for a

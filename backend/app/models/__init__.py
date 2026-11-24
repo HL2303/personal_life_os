@@ -18,6 +18,7 @@ from app.models.telegram import (
     TelegramIntegration,
     TelegramLinkToken,
     TelegramOutbox,
+    TelegramPendingActivity,
     TelegramUpdate,
 )
 
@@ -32,6 +33,7 @@ __all__ = [
     "TelegramIntegration",
     "TelegramLinkToken",
     "TelegramOutbox",
+    "TelegramPendingActivity",
     "TelegramUpdate",
     "Goal",
     "GoalMilestone",

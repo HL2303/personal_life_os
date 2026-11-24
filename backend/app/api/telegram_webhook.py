@@ -19,17 +19,23 @@ from app.models.telegram import (
     TelegramIntegration,
     TelegramLinkToken,
     TelegramOutbox,
+    TelegramPendingActivity,
     TelegramUpdate,
 )
 from app.services.activity_service import create_activity_for_user
-from app.telegram.extraction import ActivityParsingError, extract_activities
+from app.telegram.extraction import (
+    ActivityParsingError,
+    ActivityProviderUnavailable,
+    extract_activities,
+)
+from app.telegram.pending import pending_retry_delay, retry_failed_pending
 from app.telegram.scheduling import next_checkin_time
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 HELP_TEXT = (
     "I can log your activities from messages. Commands: /link CODE, /pause, /resume, "
-    "/today, /skip, /help. To link this private chat, create a one-time code in "
+    "/today, /skip, /retry, /help. To link this private chat, create a one-time code in "
     "Personal Life OS settings and send /link CODE here."
 )
 
@@ -216,6 +222,23 @@ def _command(
         _finish(db, update, "Check-ins are resumed.")
     elif command == "/today":
         _finish(db, update, _today_message(db, integration.user, integration))
+    elif command == "/retry":
+        retried = retry_failed_pending(
+            db,
+            integration.id,
+            integration.user_id,
+            datetime.now(UTC),
+        )
+        _finish(
+            db,
+            update,
+            (
+                f"Queued {retried} saved activity "
+                f"{'message' if retried == 1 else 'messages'} for another attempt."
+                if retried
+                else "There are no saved activity messages that need a manual retry."
+            ),
+        )
     elif command == "/skip":
         checkin = db.scalar(
             select(TelegramCheckin)
@@ -280,12 +303,40 @@ def _process_message(
             f"Earlier activity details: {integration.pending_message_text}\n"
             f"Clarification: {text}"
         )
-    activities, clarification = extract_activities(
-        db,
-        integration.user_id,
-        message,
-        integration.timezone,
-    )
+    try:
+        activities, clarification = extract_activities(
+            db,
+            integration.user_id,
+            message,
+            integration.timezone,
+        )
+    except ActivityProviderUnavailable as exc:
+        now = datetime.now(UTC)
+        db.add(
+            TelegramPendingActivity(
+                user_id=integration.user_id,
+                integration_id=integration.id,
+                source_update_id=update.id,
+                message_text=message[:16000],
+                status="pending",
+                attempts=0,
+                next_attempt_at=now + pending_retry_delay(0, exc.retry_after_seconds),
+                processing_started_at=None,
+                last_error="provider_unavailable",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        _finish(
+            db,
+            update,
+            (
+                "Gemini activity extraction is temporarily unavailable. "
+                "Your message is safely saved and will be retried automatically. "
+                "Send /retry if you'd like to retry a message that exhausts automatic attempts."
+            ),
+        )
+        return
     if clarification:
         integration.pending_message_text = message[:8000]
         _finish(db, update, clarification)

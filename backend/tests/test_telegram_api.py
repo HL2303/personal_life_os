@@ -15,6 +15,7 @@ from app.models.telegram import (
     TelegramIntegration,
     TelegramLinkToken,
     TelegramOutbox,
+    TelegramPendingActivity,
     TelegramUpdate,
 )
 from app.schemas.activity import ActivityCreate
@@ -168,6 +169,247 @@ def test_webhook_reuses_activity_validation_and_deduplicates_activity(
         activity = db.scalar(select(Activity))
         assert activity.title == "Planning"
         assert activity.source == "telegram"
+
+
+@pytest.mark.parametrize("http_status", [500, 503])
+def test_provider_retries_repeated_transient_errors_with_bounded_attempts(
+    monkeypatch, caplog, http_status
+):
+    from app.telegram import extraction
+
+    monkeypatch.setattr(settings, "ai_provider", "openai_compatible")
+    monkeypatch.setattr(settings, "ai_api_key", SecretStr("private-key"))
+    calls = []
+    delays = []
+
+    def unavailable(*_args, **_kwargs):
+        calls.append(True)
+        raise HTTPError(
+            "https://provider.test/v1/chat/completions",
+            http_status,
+            "Service Unavailable",
+            {},
+            io.BytesIO(b'{"error":{"status":"UNAVAILABLE","message":"secret"}}'),
+        )
+
+    monkeypatch.setattr(extraction, "urlopen", unavailable)
+    monkeypatch.setattr(extraction.time, "sleep", delays.append)
+    monkeypatch.setattr(extraction.random, "uniform", lambda _start, end: end)
+
+    with caplog.at_level("WARNING", logger=extraction.__name__):
+        with pytest.raises(extraction.ActivityProviderUnavailable):
+            extraction._call_provider("private activity content")
+
+    assert len(calls) == extraction.MAX_PROVIDER_ATTEMPTS == 3
+    assert len(delays) == 2
+    assert delays == [0.25, 0.5]
+    assert caplog.text.count(f"status_code={http_status}") == 3
+    assert '"status":"UNAVAILABLE"' in caplog.text
+    assert "secret" not in caplog.text
+    assert "private activity content" not in caplog.text
+
+
+def test_provider_recovers_after_transient_503(monkeypatch):
+    from app.telegram import extraction
+
+    monkeypatch.setattr(settings, "ai_provider", "openai_compatible")
+    monkeypatch.setattr(settings, "ai_api_key", SecretStr("private-key"))
+    monkeypatch.setattr(settings, "ai_request_timeout_seconds", 120)
+    calls = 0
+    timeouts = []
+
+    class SuccessfulResponse(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def recover(*_args, **kwargs):
+        nonlocal calls
+        calls += 1
+        timeouts.append(kwargs["timeout"])
+        if calls == 1:
+            raise HTTPError(
+                "https://provider.test/v1/chat/completions",
+                503,
+                "Service Unavailable",
+                {},
+                io.BytesIO(b"{}"),
+            )
+        response = {
+            "choices": [
+                {"message": {"content": '{"activities":[],"clarification":"What activity?"}'}}
+            ]
+        }
+        return SuccessfulResponse(json.dumps(response).encode())
+
+    monkeypatch.setattr(extraction, "urlopen", recover)
+    monkeypatch.setattr(extraction.time, "sleep", lambda _delay: None)
+
+    result = extraction._call_provider("private fixed test")
+
+    assert calls == 2
+    assert timeouts == [15, 15]
+    assert result.clarification == "What activity?"
+
+
+def test_retry_after_is_respected_without_blocking_webhook():
+    from app.telegram.extraction import _parse_retry_after, _retry_delay
+
+    assert _parse_retry_after("30") == 30
+    assert _retry_delay(1, 30) is None
+
+
+def test_unavailable_extraction_is_saved_and_duplicate_webhook_is_idempotent(
+    client, monkeypatch, database
+):
+    configure_telegram(monkeypatch)
+    create_owner(client)
+    integration_id = add_integration(
+        database,
+        next_checkin_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    import app.api.telegram_webhook as webhook
+    from app.telegram.extraction import ActivityProviderUnavailable
+
+    def unavailable(*_args, **_kwargs):
+        raise ActivityProviderUnavailable()
+
+    monkeypatch.setattr(webhook, "extract_activities", unavailable)
+
+    message = "I studied biology from 9 to 10"
+    assert send_webhook(client, 4101, message).status_code == 200
+    assert send_webhook(client, 4101, message).status_code == 200
+
+    with database() as db:
+        pending = db.scalar(select(TelegramPendingActivity))
+        update = db.scalar(select(TelegramUpdate).where(TelegramUpdate.update_id == 4101))
+        outbox = db.scalar(select(TelegramOutbox))
+        user = db.scalar(select(User).where(User.username == "telegram-owner"))
+        assert pending is not None
+        assert pending.user_id == user.id
+        assert pending.integration_id == integration_id
+        assert pending.message_text == message
+        assert pending.status == "pending"
+        assert update.status == "processed"
+        assert "safely saved" in outbox.text
+        assert db.scalar(select(func.count(TelegramPendingActivity.id))) == 1
+        assert db.scalar(select(func.count(TelegramOutbox.id))) == 1
+
+
+def test_worker_retries_pending_activity_and_linked_user_can_retry_failed_items(
+    client, monkeypatch, database
+):
+    configure_telegram(monkeypatch)
+    create_owner(client)
+    integration_id = add_integration(
+        database,
+        next_checkin_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    import app.api.telegram_webhook as webhook
+    import app.telegram.pending as pending_service
+    from app.telegram.extraction import ActivityProviderUnavailable
+    from app.telegram.worker import run_once
+
+    def unavailable(*_args, **_kwargs):
+        raise ActivityProviderUnavailable()
+
+    monkeypatch.setattr(webhook, "extract_activities", unavailable)
+    message = "I studied biology from 9 to 10"
+    send_webhook(client, 4201, message)
+    category_id = client.get("/api/categories").json()[0]["id"]
+    activity_payload = ActivityCreate(
+        title="Biology study",
+        category_id=category_id,
+        started_at=datetime(2026, 11, 3, 9, tzinfo=UTC),
+        ended_at=datetime(2026, 11, 3, 10, tzinfo=UTC),
+        source="telegram",
+    )
+    monkeypatch.setattr(
+        pending_service,
+        "extract_activities",
+        lambda *_args, **_kwargs: ([activity_payload], None),
+    )
+    now = datetime.now(UTC) + timedelta(minutes=5)
+    with database() as db:
+        pending = db.scalar(select(TelegramPendingActivity))
+        pending_id = pending.id
+        pending.next_attempt_at = now - timedelta(seconds=1)
+        db.commit()
+    sent = []
+
+    result = run_once(
+        database,
+        now=now,
+        sender=lambda chat_id, text: sent.append((chat_id, text)) or 501,
+    )
+
+    assert result["activities_retried"] == 1
+    assert any("Logged 1 activity: Biology study" in text for _, text in sent)
+    with database() as db:
+        pending = db.get(TelegramPendingActivity, pending_id)
+        assert pending.status == "completed"
+        assert db.scalar(select(func.count(Activity.id))) == 1
+        pending.status = "failed"
+        pending.attempts = 5
+        db.commit()
+
+    assert send_webhook(client, 4202, "/retry").status_code == 200
+    with database() as db:
+        pending = db.get(TelegramPendingActivity, pending_id)
+        assert pending.status == "pending"
+        assert pending.attempts == 0
+        assert pending.integration_id == integration_id
+
+    assert send_webhook(client, 4203, "/retry", chat_id=90002).status_code == 200
+    with database() as db:
+        pending = db.get(TelegramPendingActivity, pending_id)
+        assert pending.status == "pending"
+
+
+def test_pending_activity_exhaustion_notifies_user_without_deleting_message(
+    client, monkeypatch, database
+):
+    configure_telegram(monkeypatch)
+    create_owner(client)
+    add_integration(database, next_checkin_at=datetime.now(UTC) + timedelta(hours=1))
+    import app.api.telegram_webhook as webhook
+    import app.telegram.pending as pending_service
+    from app.telegram.extraction import ActivityProviderUnavailable
+    from app.telegram.worker import run_once
+
+    def unavailable(*_args, **_kwargs):
+        raise ActivityProviderUnavailable()
+
+    monkeypatch.setattr(webhook, "extract_activities", unavailable)
+    message = "I studied biology from 9 to 10"
+    send_webhook(client, 4301, message)
+    monkeypatch.setattr(pending_service, "extract_activities", unavailable)
+    now = datetime.now(UTC) + timedelta(minutes=5)
+    with database() as db:
+        pending = db.scalar(select(TelegramPendingActivity))
+        pending.attempts = pending_service.MAX_PENDING_ATTEMPTS - 1
+        pending.next_attempt_at = now - timedelta(seconds=1)
+        db.commit()
+        pending_id = pending.id
+    sent = []
+
+    result = run_once(
+        database,
+        now=now,
+        sender=lambda chat_id, text: sent.append((chat_id, text)) or 502,
+    )
+
+    assert result["activities_pending_or_failed"] == 1
+    assert any("send /retry" in text for _, text in sent)
+    with database() as db:
+        pending = db.get(TelegramPendingActivity, pending_id)
+        assert pending.status == "failed"
+        assert pending.attempts == pending_service.MAX_PENDING_ATTEMPTS
+        assert pending.message_text == message
 
 
 def test_commands_pause_resume_skip_and_today(client, monkeypatch, database):

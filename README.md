@@ -72,15 +72,19 @@ to deliver scheduled check-ins and queued replies. Scheduling and delivery
 state is persisted in PostgreSQL, not in the web server process. Link the bot
 from **Telegram** in the app, then configure the interval, timezone, active
 hours, and quiet hours there. Bot commands include `/start`, `/link`, `/pause`,
-`/resume`, `/today`, `/skip`, and `/help`.
+`/resume`, `/today`, `/skip`, `/retry`, and `/help`.
+If Gemini activity extraction is temporarily unavailable, the bot saves the
+message for the supervised worker to retry; send `/retry` to requeue items
+after automatic attempts are exhausted.
 
 Natural-language extraction is opt-in. Set `AI_PROVIDER=openai_compatible`,
 `AI_API_KEY`, and `AI_MODEL` (and optionally `AI_BASE_URL`) to enable it. When
-an AI provider is not configured, Telegram activity text is not logged; the
-app asks the user to enter it in the dashboard instead. When configured,
-Telegram message text, the user's categories, and local date/time context are
-sent to that provider for extraction. Low-confidence or incomplete results
-require clarification and are not saved.
+an AI provider is not configured, no activity is created and the app asks the
+user to enter it in the dashboard instead. Telegram messages are retained in
+the database's update history. When configured, message text, the user's
+categories, and local date/time context are sent to that provider for
+extraction. Low-confidence or incomplete results require clarification and
+are not saved as activities.
 
 ## Validation
 

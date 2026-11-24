@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.core.config import settings
+from app.core.config import USER_AGENT, settings
 from app.models.activity import ActivityCategory
 from app.schemas.activity import ActivityCreate
 
@@ -186,6 +186,7 @@ def _call_provider(prompt: str) -> ExtractionResponse:
         headers={
             "Authorization": f"Bearer {settings.ai_api_key.get_secret_value()}",
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )

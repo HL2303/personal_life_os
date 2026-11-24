@@ -12,7 +12,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from app.core.config import settings
+from app.core.config import USER_AGENT, settings
 
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 BEARER_TOKEN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*")
@@ -111,6 +111,7 @@ def make_request(
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )

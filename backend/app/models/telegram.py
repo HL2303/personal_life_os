@@ -3,6 +3,7 @@ from datetime import datetime, time
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -99,6 +100,39 @@ class TelegramUpdate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     processing_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TelegramPendingActivity(Base):
+    __tablename__ = "telegram_pending_activities"
+    __table_args__ = (
+        UniqueConstraint("source_update_id", name="uq_telegram_pending_source_update"),
+        Index("ix_telegram_pending_retry", "status", "next_attempt_at"),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'needs_clarification', 'failed')",
+            name="ck_telegram_pending_status",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_telegram_pending_attempts"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    integration_id: Mapped[int] = mapped_column(
+        ForeignKey("telegram_integrations.id", ondelete="CASCADE"), index=True
+    )
+    source_update_id: Mapped[int] = mapped_column(
+        ForeignKey("telegram_updates.id", ondelete="CASCADE")
+    )
+    message_text: Mapped[str] = mapped_column(Text())
+    status: Mapped[str] = mapped_column(String(24), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer(), default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TelegramOutbox(Base):

@@ -1,6 +1,10 @@
 import json
 import logging
+import random
+import time
 from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from math import ceil
 from typing import Annotated
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -16,14 +20,26 @@ from app.schemas.activity import ActivityCreate
 
 logger = logging.getLogger(__name__)
 CONFIDENCE_THRESHOLD = 0.8
+MAX_PROVIDER_ATTEMPTS = 3
+MAX_INLINE_RETRY_DELAY_SECONDS = 2.0
+MAX_PROVIDER_REQUEST_TIMEOUT_SECONDS = 15
+MAX_RETRY_AFTER_SECONDS = 30 * 24 * 60 * 60
 SAFE_PROVIDER_ERROR_TYPES = {
     "api_error",
     "authentication_error",
+    "INTERNAL",
     "invalid_request_error",
     "rate_limit_error",
+    "RESOURCE_EXHAUSTED",
     "server_error",
+    "UNAVAILABLE",
 }
 SAFE_PROVIDER_ERROR_CODES = {
+    "500",
+    "503",
+    "INTERNAL",
+    "RESOURCE_EXHAUSTED",
+    "UNAVAILABLE",
     "context_length_exceeded",
     "insufficient_quota",
     "invalid_api_key",
@@ -64,6 +80,41 @@ class ActivityParsingError(Exception):
     pass
 
 
+class ActivityProviderUnavailable(ActivityParsingError):
+    def __init__(self, *, retry_after_seconds: int | None = None):
+        super().__init__("The activity extraction provider is temporarily unavailable.")
+        self.retry_after_seconds = retry_after_seconds
+
+
+def _parse_retry_after(value: str | None, *, now: datetime | None = None) -> int | None:
+    if not value:
+        return None
+    try:
+        seconds = max(0, ceil(float(value)))
+    except (ValueError, OverflowError):
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            return None
+        seconds = max(
+            0,
+            ceil((retry_at.astimezone(UTC) - (now or datetime.now(UTC))).total_seconds()),
+        )
+    return min(seconds, MAX_RETRY_AFTER_SECONDS)
+
+
+def _retry_delay(attempt: int, retry_after_seconds: int | None) -> float | None:
+    jitter_ceiling = min(1.0, 0.25 * (2 ** max(0, attempt - 1)))
+    jitter = random.uniform(0, jitter_ceiling)
+    if retry_after_seconds is not None:
+        if retry_after_seconds > MAX_INLINE_RETRY_DELAY_SECONDS:
+            return None
+        return max(float(retry_after_seconds), jitter)
+    return jitter
+
+
 def _sanitize_provider_error(response: bytes) -> str:
     try:
         body = json.loads(response)
@@ -78,9 +129,18 @@ def _sanitize_provider_error(response: bytes) -> str:
     error_type = error.get("type")
     if isinstance(error_type, str) and error_type in SAFE_PROVIDER_ERROR_TYPES:
         sanitized["type"] = error_type
+    error_status = error.get("status")
+    if isinstance(error_status, str) and error_status in {
+        "INTERNAL",
+        "RESOURCE_EXHAUSTED",
+        "UNAVAILABLE",
+    }:
+        sanitized["status"] = error_status
     code = error.get("code")
     if isinstance(code, str) and code in SAFE_PROVIDER_ERROR_CODES:
         sanitized["code"] = code
+    elif isinstance(code, int) and not isinstance(code, bool) and code in {500, 503}:
+        sanitized["code"] = str(code)
     return json.dumps({"error": sanitized or "unavailable"}, separators=(",", ":"))
 
 
@@ -130,23 +190,46 @@ def _call_provider(prompt: str) -> ExtractionResponse:
         method="POST",
     )
     try:
-        with urlopen(request, timeout=settings.ai_request_timeout_seconds) as response:
-            data = json.loads(response.read())
+        data = None
+        for attempt in range(1, MAX_PROVIDER_ATTEMPTS + 1):
+            try:
+                with urlopen(
+                    request,
+                    timeout=min(
+                        settings.ai_request_timeout_seconds,
+                        MAX_PROVIDER_REQUEST_TIMEOUT_SECONDS,
+                    ),
+                ) as response:
+                    data = json.loads(response.read())
+                break
+            except HTTPError as exc:
+                try:
+                    response_body = exc.read()
+                except OSError:
+                    response_body = b""
+                logger.warning(
+                    "Activity extraction provider HTTP error; status_code=%s "
+                    "sanitized_response=%s",
+                    exc.code,
+                    _sanitize_provider_error(response_body),
+                )
+                if exc.code not in {500, 503}:
+                    raise ActivityParsingError(
+                        "I couldn't process that message right now. Please try again shortly."
+                    ) from None
+                retry_after = _parse_retry_after(
+                    exc.headers.get("Retry-After") if exc.headers else None
+                )
+                delay = _retry_delay(attempt, retry_after)
+                if attempt >= MAX_PROVIDER_ATTEMPTS or delay is None:
+                    raise ActivityProviderUnavailable(
+                        retry_after_seconds=retry_after
+                    ) from None
+                time.sleep(delay)
+        if data is None:
+            raise ActivityProviderUnavailable()
         content = data["choices"][0]["message"]["content"]
         return ExtractionResponse.model_validate_json(content)
-    except HTTPError as exc:
-        try:
-            response_body = exc.read()
-        except OSError:
-            response_body = b""
-        logger.warning(
-            "Activity extraction provider HTTP error; status_code=%s sanitized_response=%s",
-            exc.code,
-            _sanitize_provider_error(response_body),
-        )
-        raise ActivityParsingError(
-            "I couldn't process that message right now. Please try again shortly."
-        ) from None
     except (
         URLError,
         TimeoutError,
@@ -157,9 +240,7 @@ def _call_provider(prompt: str) -> ExtractionResponse:
         json.JSONDecodeError,
     ) as exc:
         logger.warning("Activity extraction provider failed; error_type=%s", type(exc).__name__)
-        raise ActivityParsingError(
-            "I couldn't process that message right now. Please try again shortly."
-        ) from None
+        raise ActivityProviderUnavailable() from None
     except ValidationError:
         logger.warning("Activity extraction provider returned invalid data")
         raise ActivityParsingError(

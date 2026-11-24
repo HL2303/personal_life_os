@@ -1,7 +1,8 @@
 import re
 from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 USER_AGENT = "personal-life-os/1.0"
@@ -9,6 +10,7 @@ USER_AGENT = "personal-life-os/1.0"
 
 class Settings(BaseSettings):
     app_env: str = "development"
+    default_timezone: str = Field(default="UTC", validation_alias="APP_DEFAULT_TIMEZONE")
     database_url: SecretStr = SecretStr(
         "postgresql+psycopg://personal_life_os:local-dev-only@localhost:5432/personal_life_os"
     )
@@ -42,6 +44,16 @@ class Settings(BaseSettings):
         if normalized not in {"none", "openai_compatible"}:
             raise ValueError("AI_PROVIDER must be none or openai_compatible.")
         return normalized
+
+    @field_validator("default_timezone")
+    @classmethod
+    def validate_default_timezone(cls, value: str) -> str:
+        value = value.strip()
+        try:
+            ZoneInfo(value)
+        except (ValueError, ZoneInfoNotFoundError) as exc:
+            raise ValueError("APP_DEFAULT_TIMEZONE must be a valid IANA timezone.") from exc
+        return value
 
     @field_validator("telegram_webhook_secret")
     @classmethod

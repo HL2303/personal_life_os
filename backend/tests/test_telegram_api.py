@@ -628,7 +628,7 @@ def test_activity_extraction_supports_multiple_and_requests_clarification(
     with database() as db:
         user = db.scalar(select(User).where(User.username == "telegram-owner"))
         activities, clarification = extraction.extract_activities(
-            db, user.id, "I planned then walked", "UTC"
+            db, user.id, "I planned from 9 to 10 and walked from 10 to 10:30", "UTC"
         )
         assert clarification is None
         assert [activity.title for activity in activities] == ["Plan sprint", "Walk"]
@@ -638,7 +638,7 @@ def test_activity_extraction_supports_multiple_and_requests_clarification(
     with database() as db:
         user = db.scalar(select(User).where(User.username == "telegram-owner"))
         activities, clarification = extraction.extract_activities(
-            db, user.id, "I did something", "UTC"
+            db, user.id, "I did something from 9 to 10", "UTC"
         )
         assert activities == []
         assert clarification and "confirm" in clarification

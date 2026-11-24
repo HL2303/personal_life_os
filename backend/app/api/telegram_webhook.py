@@ -303,22 +303,31 @@ def _process_message(
             f"Earlier activity details: {integration.pending_message_text}\n"
             f"Clarification: {text}"
         )
-    checkin_sent_at = None
-    if checkin is not None:
-        checkin_sent_at = checkin.sent_at or checkin.scheduled_for
-    if checkin_sent_at is not None and not integration.pending_message_text:
-        message = (
-            f"{message}\nCheck-in window began at {checkin_sent_at.isoformat()} "
-            f"and is approximately {integration.interval_minutes} minutes."
+    observation_start = None
+    observation_end = None
+    if checkin is not None and checkin.sent_at is not None:
+        previous_checkin = db.scalar(
+            select(TelegramCheckin)
+            .where(
+                TelegramCheckin.integration_id == integration.id,
+                TelegramCheckin.id != checkin.id,
+                TelegramCheckin.sent_at.is_not(None),
+                TelegramCheckin.sent_at < checkin.sent_at,
+            )
+            .order_by(TelegramCheckin.sent_at.desc())
         )
+        observation_start = (
+            _utc(previous_checkin.sent_at) if previous_checkin is not None else None
+        )
+        observation_end = _utc(checkin.sent_at)
     try:
         activities, clarification = extract_activities(
             db,
             integration.user_id,
             message,
             integration.timezone or settings.default_timezone,
-            checkin_sent_at=checkin_sent_at,
-            checkin_interval_minutes=integration.interval_minutes,
+            observation_start=observation_start,
+            observation_end=observation_end,
         )
     except ActivityProviderUnavailable as exc:
         now = datetime.now(UTC)

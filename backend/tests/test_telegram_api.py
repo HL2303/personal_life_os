@@ -641,7 +641,7 @@ def test_activity_extraction_supports_multiple_and_requests_clarification(
             db, user.id, "I did something", "UTC"
         )
         assert activities == []
-        assert clarification and "start and end times" in clarification
+        assert clarification and "confirm" in clarification
 
     response.activities[0].confidence = 0.95
     response.activities[0].started_at = None

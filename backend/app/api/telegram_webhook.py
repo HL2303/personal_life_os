@@ -124,7 +124,7 @@ def _link_chat(
             user_id=link.user_id,
             telegram_chat_id=chat_id,
             interval_minutes=30,
-            timezone="UTC",
+            timezone=settings.default_timezone,
             active_start=time(8),
             active_end=time(22),
             quiet_start=time(22),
@@ -303,12 +303,22 @@ def _process_message(
             f"Earlier activity details: {integration.pending_message_text}\n"
             f"Clarification: {text}"
         )
+    checkin_sent_at = None
+    if checkin is not None:
+        checkin_sent_at = checkin.sent_at or checkin.scheduled_for
+    if checkin_sent_at is not None and not integration.pending_message_text:
+        message = (
+            f"{message}\nCheck-in window began at {checkin_sent_at.isoformat()} "
+            f"and is approximately {integration.interval_minutes} minutes."
+        )
     try:
         activities, clarification = extract_activities(
             db,
             integration.user_id,
             message,
-            integration.timezone,
+            integration.timezone or settings.default_timezone,
+            checkin_sent_at=checkin_sent_at,
+            checkin_interval_minutes=integration.interval_minutes,
         )
     except ActivityProviderUnavailable as exc:
         now = datetime.now(UTC)
@@ -338,7 +348,9 @@ def _process_message(
         )
         return
     if clarification:
-        integration.pending_message_text = message[:8000]
+        integration.pending_message_text = (
+            f"{message}\nPrevious extraction: {clarification}"
+        )[:8000]
         _finish(db, update, clarification)
         return
     if not activities:

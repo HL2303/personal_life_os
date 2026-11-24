@@ -39,7 +39,7 @@ def get_settings(
             paused=False,
             bot_username=settings.telegram_bot_username,
             interval_minutes=30,
-            timezone="UTC",
+            timezone=settings.default_timezone,
             active_start="08:00",
             active_end="22:00",
             quiet_start="22:00",

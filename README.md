@@ -79,6 +79,8 @@ after automatic attempts are exhausted.
 
 Natural-language extraction is opt-in. Set `AI_PROVIDER=openai_compatible`,
 `AI_API_KEY`, and `AI_MODEL` (and optionally `AI_BASE_URL`) to enable it. When
+Telegram uses the user's saved timezone; new integrations and users without a
+saved timezone use `APP_DEFAULT_TIMEZONE` (default `UTC`). When
 an AI provider is not configured, no activity is created and the app asks the
 user to enter it in the dashboard instead. Telegram messages are retained in
 the database's update history. When configured, message text, the user's

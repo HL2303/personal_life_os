@@ -68,12 +68,19 @@ def test_activity_options_probe_matches_parameters_under_investigation():
         {"temperature": 0, "response_format": {"type": "json_object"}},
     )
 
-    assert json.loads(request.data) == {
+    payload = json.loads(request.data)
+    assert payload == {
         "model": "gemini-3.8-flash",
-        "messages": [{"role": "user", "content": "Reply with OK."}],
+        "messages": [
+            {
+                "role": "user",
+                "content": "Reply with OK. Return a valid JSON response.",
+            }
+        ],
         "temperature": 0,
         "response_format": {"type": "json_object"},
     }
+    assert "json" in payload["messages"][0]["content"].casefold()
     assert request.get_header("User-agent") == diagnostic.USER_AGENT
 
 

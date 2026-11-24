@@ -104,7 +104,11 @@ def make_request(
     api_key: str,
     optional_parameters: dict,
 ) -> Request:
-    payload = {"model": model, "messages": FIXED_MESSAGES, **optional_parameters}
+    messages = [dict(message) for message in FIXED_MESSAGES]
+    response_format = optional_parameters.get("response_format")
+    if isinstance(response_format, dict) and response_format.get("type") == "json_object":
+        messages[-1]["content"] = f"{messages[-1]['content']} Return a valid JSON response."
+    payload = {"model": model, "messages": messages, **optional_parameters}
     return Request(
         f"{base_url.rstrip('/')}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
